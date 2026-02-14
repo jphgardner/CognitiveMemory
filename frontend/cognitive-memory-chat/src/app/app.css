@@ -1,0 +1,28 @@
+:host {
+  display: block;
+  min-height: 100vh;
+}
+
+.cm-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(71, 85, 105, 0.9) rgba(2, 6, 23, 0.35);
+}
+
+.cm-scrollbar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.cm-scrollbar::-webkit-scrollbar-track {
+  background: rgba(2, 6, 23, 0.3);
+}
+
+.cm-scrollbar::-webkit-scrollbar-thumb {
+  border: 2px solid rgba(2, 6, 23, 0.55);
+  border-radius: 999px;
+  background: rgba(71, 85, 105, 0.9);
+}
+
+.cm-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.95);
+}

@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/CognitiveMemory.Api/CognitiveMemory.Api.csproj" />
+    <Project Path="src/CognitiveMemory.Application/CognitiveMemory.Application.csproj" />
+    <Project Path="src/CognitiveMemory.Domain/CognitiveMemory.Domain.csproj" />
+    <Project Path="src/CognitiveMemory.Infrastructure/CognitiveMemory.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CognitiveMemory.Api.Tests/CognitiveMemory.Api.Tests.csproj" />
+    <Project Path="tests/CognitiveMemory.Application.Tests/CognitiveMemory.Application.Tests.csproj" />
+    <Project Path="tests/CognitiveMemory.Infrastructure.Tests/CognitiveMemory.Infrastructure.Tests.csproj" />
+  </Folder>
+  <Project Path="CognitiveMemory.AppHost/CognitiveMemory.AppHost.csproj" />
+  <Project Path="CognitiveMemory.ServiceDefaults/CognitiveMemory.ServiceDefaults.csproj" />
+</Solution>

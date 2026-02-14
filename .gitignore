@@ -1,0 +1,13 @@
+**/bin/
+**/obj/
+/packages/
+riderModule.iml
+/_ReSharper.Caches/
+.idea/
+.aspire/
+.vs/
+*.user
+frontend/*/node_modules/
+frontend/*/.angular/
+frontend/*/dist/
+data/db/

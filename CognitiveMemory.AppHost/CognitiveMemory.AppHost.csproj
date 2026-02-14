@@ -1,0 +1,22 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.1.1">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <OutputType>Exe</OutputType>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <UserSecretsId>3052c78b-9304-4222-8e26-92a21aa11efe</UserSecretsId>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <PackageReference Include="Aspire.Hosting.JavaScript" />
+      <PackageReference Include="Aspire.Hosting.PostgreSQL" />
+      <PackageReference Include="Aspire.Hosting.Redis" />
+      <PackageReference Include="Aspire.Hosting.Yarp" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\src\CognitiveMemory.Api\CognitiveMemory.Api.csproj" />
+    </ItemGroup>
+
+</Project>
