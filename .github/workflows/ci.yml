@@ -1,0 +1,21 @@
+name: ci
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore
+        run: dotnet restore CognitiveMemory.slnx
+      - name: Build
+        run: dotnet build CognitiveMemory.slnx --configuration Release --no-restore
+      - name: Test
+        run: dotnet test CognitiveMemory.slnx --configuration Release --no-build

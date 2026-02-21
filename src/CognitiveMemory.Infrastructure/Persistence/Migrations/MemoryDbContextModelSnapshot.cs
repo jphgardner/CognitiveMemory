@@ -22,134 +22,7 @@ namespace CognitiveMemory.Infrastructure.Persistence.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
-            modelBuilder.Entity("CognitiveMemory.Domain.Entities.Claim", b =>
-                {
-                    b.Property<Guid>("ClaimId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<double>("Confidence")
-                        .HasColumnType("double precision");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Hash")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
-
-                    b.Property<DateTimeOffset?>("LastReinforcedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("LiteralValue")
-                        .HasColumnType("text");
-
-                    b.Property<Guid?>("ObjectEntityId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Predicate")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
-
-                    b.Property<string>("Scope")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<Guid>("SubjectEntityId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTimeOffset?>("ValidFrom")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTimeOffset?>("ValidTo")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("ValueType")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)");
-
-                    b.HasKey("ClaimId");
-
-                    b.HasIndex("Hash")
-                        .IsUnique();
-
-                    b.ToTable("Claims", t =>
-                        {
-                            t.HasCheckConstraint("ck_claim_object_or_literal", "(\"ObjectEntityId\" IS NULL) <> (\"LiteralValue\" IS NULL)");
-                        });
-                });
-
-            modelBuilder.Entity("CognitiveMemory.Domain.Entities.ClaimCalibration", b =>
-                {
-                    b.Property<Guid>("CalibrationId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid>("ClaimId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("ReasonCodesJson")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<double>("RecommendedConfidence")
-                        .HasColumnType("double precision");
-
-                    b.Property<string>("SourceEventRef")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.HasKey("CalibrationId");
-
-                    b.HasIndex("ClaimId", "CreatedAt");
-
-                    b.ToTable("ClaimCalibrations");
-                });
-
-            modelBuilder.Entity("CognitiveMemory.Domain.Entities.ClaimInsight", b =>
-                {
-                    b.Property<Guid>("ClaimId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("KeywordsJson")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("SourceEventRef")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.Property<string>("Summary")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.HasKey("ClaimId");
-
-                    b.HasIndex("UpdatedAt");
-
-                    b.ToTable("ClaimInsights");
-                });
-
-            modelBuilder.Entity("CognitiveMemory.Domain.Entities.Contradiction", b =>
+            modelBuilder.Entity("CognitiveMemory.Infrastructure.Persistence.Entities.ClaimContradictionEntity", b =>
                 {
                     b.Property<Guid>("ContradictionId")
                         .ValueGeneratedOnAdd()
@@ -161,16 +34,13 @@ namespace CognitiveMemory.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("ClaimBId")
                         .HasColumnType("uuid");
 
-                    b.Property<DateTimeOffset>("DetectedAt")
+                    b.Property<DateTimeOffset>("DetectedAtUtc")
                         .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("ResolutionNotes")
-                        .HasColumnType("text");
 
                     b.Property<string>("Severity")
                         .IsRequired()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)");
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -179,24 +49,24 @@ namespace CognitiveMemory.Infrastructure.Persistence.Migrations
 
                     b.Property<string>("Type")
                         .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)");
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
                     b.HasKey("ContradictionId");
 
                     b.HasIndex("ClaimAId", "ClaimBId")
                         .IsUnique();
 
-                    b.ToTable("Contradictions");
+                    b.ToTable("ClaimContradictions", (string)null);
                 });
 
-            modelBuilder.Entity("CognitiveMemory.Domain.Entities.Evidence", b =>
+            modelBuilder.Entity("CognitiveMemory.Infrastructure.Persistence.Entities.ClaimEvidenceEntity", b =>
                 {
                     b.Property<Guid>("EvidenceId")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
-                    b.Property<DateTimeOffset>("CapturedAt")
+                    b.Property<DateTimeOffset>("CapturedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<Guid>("ClaimId")
@@ -206,264 +76,259 @@ namespace CognitiveMemory.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<string>("Metadata")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("SourceRef")
+                    b.Property<string>("SourceReference")
                         .IsRequired()
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)");
 
                     b.Property<string>("SourceType")
                         .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)");
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
                     b.Property<double>("Strength")
                         .HasColumnType("double precision");
 
                     b.HasKey("EvidenceId");
 
-                    b.HasIndex("ClaimId");
+                    b.HasIndex("ClaimId", "CapturedAtUtc");
 
-                    b.ToTable("Evidence");
+                    b.ToTable("ClaimEvidence", (string)null);
                 });
 
-            modelBuilder.Entity("CognitiveMemory.Domain.Entities.MemoryEntity", b =>
+            modelBuilder.Entity("CognitiveMemory.Infrastructure.Persistence.Entities.ConsolidationPromotionEntity", b =>
                 {
-                    b.Property<Guid>("EntityId")
+                    b.Property<Guid>("PromotionId")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
-                    b.PrimitiveCollection<string>("Aliases")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
+                    b.Property<Guid>("EpisodicEventId")
+                        .HasColumnType("uuid");
 
-                    b.Property<DateTimeOffset>("CreatedAt")
+                    b.Property<string>("Notes")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset>("ProcessedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<string>("Metadata")
+                    b.Property<Guid?>("SemanticClaimId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("PromotionId");
+
+                    b.HasIndex("EpisodicEventId")
+                        .IsUnique();
+
+                    b.HasIndex("ProcessedAtUtc");
+
+                    b.ToTable("ConsolidationPromotions", (string)null);
+                });
+
+            modelBuilder.Entity("CognitiveMemory.Infrastructure.Persistence.Entities.EpisodicMemoryEventEntity", b =>
+                {
+                    b.Property<Guid>("EventId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Context")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("SessionId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("SourceReference")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("What")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Who")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.HasKey("EventId");
+
+                    b.HasIndex("SessionId", "OccurredAt");
+
+                    b.ToTable("EpisodicMemoryEvents", (string)null);
+                });
+
+            modelBuilder.Entity("CognitiveMemory.Infrastructure.Persistence.Entities.ProceduralRoutineEntity", b =>
+                {
+                    b.Property<Guid>("RoutineId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CheckpointsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)");
 
-                    b.Property<string>("Type")
+                    b.Property<string>("Outcome")
                         .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)");
+                        .HasColumnType("text");
 
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.HasKey("EntityId");
-
-                    b.HasIndex("Type", "Name")
-                        .IsUnique();
-
-                    b.ToTable("Entities");
-                });
-
-            modelBuilder.Entity("CognitiveMemory.Domain.Entities.OutboxEvent", b =>
-                {
-                    b.Property<Guid>("EventId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid?>("AggregateId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("AggregateType")
+                    b.Property<string>("StepsJson")
                         .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
+                        .HasColumnType("text");
 
-                    b.Property<int>("Attempts")
-                        .HasColumnType("integer");
-
-                    b.Property<DateTimeOffset>("AvailableAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("EventType")
+                    b.Property<string>("Trigger")
                         .IsRequired()
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
 
-                    b.Property<string>("IdempotencyKey")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)");
-
-                    b.Property<string>("LastError")
-                        .HasColumnType("text");
-
-                    b.Property<DateTimeOffset?>("LockedUntil")
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<string>("PayloadJson")
+                    b.HasKey("RoutineId");
+
+                    b.HasIndex("Trigger");
+
+                    b.ToTable("ProceduralRoutines", (string)null);
+                });
+
+            modelBuilder.Entity("CognitiveMemory.Infrastructure.Persistence.Entities.SelfPreferenceEntity", b =>
+                {
+                    b.Property<string>("Key")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Value")
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<DateTimeOffset?>("ProcessedAt")
+                    b.HasKey("Key");
+
+                    b.ToTable("SelfPreferences", (string)null);
+                });
+
+            modelBuilder.Entity("CognitiveMemory.Infrastructure.Persistence.Entities.SemanticClaimEntity", b =>
+                {
+                    b.Property<Guid>("ClaimId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<double>("Confidence")
+                        .HasColumnType("double precision");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Predicate")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("Scope")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
 
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
 
-                    b.HasKey("EventId");
-
-                    b.HasIndex("EventType", "IdempotencyKey")
-                        .IsUnique();
-
-                    b.HasIndex("Status", "AvailableAt");
-
-                    b.ToTable("OutboxEvents");
-                });
-
-            modelBuilder.Entity("CognitiveMemory.Domain.Entities.PolicyDecision", b =>
-                {
-                    b.Property<Guid>("DecisionId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Decision")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)");
-
-                    b.Property<string>("MetadataJson")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("PolicyVersion")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.Property<string>("ReasonCodesJson")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<double>("RiskScore")
-                        .HasColumnType("double precision");
-
-                    b.Property<string>("SourceRef")
+                    b.Property<string>("Subject")
                         .IsRequired()
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)");
 
-                    b.Property<string>("SourceType")
+                    b.Property<Guid?>("SupersededByClaimId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("ValidFromUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("ValidToUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Value")
                         .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
+                        .HasColumnType("text");
 
-                    b.HasKey("DecisionId");
+                    b.HasKey("ClaimId");
 
-                    b.HasIndex("SourceType", "SourceRef", "CreatedAt");
+                    b.HasIndex("SupersededByClaimId");
 
-                    b.ToTable("PolicyDecisions");
+                    b.HasIndex("Subject", "Predicate", "Status");
+
+                    b.ToTable("SemanticClaims", (string)null);
                 });
 
-            modelBuilder.Entity("CognitiveMemory.Domain.Entities.SourceDocument", b =>
+            modelBuilder.Entity("CognitiveMemory.Infrastructure.Persistence.Entities.ToolInvocationAuditEntity", b =>
                 {
-                    b.Property<Guid>("DocumentId")
+                    b.Property<Guid>("AuditId")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
-                    b.Property<DateTimeOffset>("CapturedAt")
+                    b.Property<string>("ArgumentsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Error")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("ExecutedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<string>("Content")
+                    b.Property<bool>("IsWrite")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("ResultJson")
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<string>("ContentHash")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
-
-                    b.Property<string>("Metadata")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("SourceRef")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)");
-
-                    b.Property<string>("SourceType")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)");
-
-                    b.HasKey("DocumentId");
-
-                    b.HasIndex("SourceType", "SourceRef", "ContentHash")
-                        .IsUnique();
-
-                    b.ToTable("Documents");
-                });
-
-            modelBuilder.Entity("CognitiveMemory.Domain.Entities.ToolExecution", b =>
-                {
-                    b.Property<Guid>("ExecutionId")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("IdempotencyKey")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)");
-
-                    b.Property<string>("ResponseJson")
-                        .IsRequired()
-                        .HasColumnType("text");
+                    b.Property<bool>("Succeeded")
+                        .HasColumnType("boolean");
 
                     b.Property<string>("ToolName")
                         .IsRequired()
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
 
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone");
+                    b.HasKey("AuditId");
 
-                    b.HasKey("ExecutionId");
+                    b.HasIndex("ToolName", "ExecutedAtUtc");
 
-                    b.HasIndex("ToolName", "IdempotencyKey")
-                        .IsUnique();
-
-                    b.ToTable("ToolExecutions");
+                    b.ToTable("ToolInvocationAudits", (string)null);
                 });
 
-            modelBuilder.Entity("CognitiveMemory.Domain.Entities.Evidence", b =>
+            modelBuilder.Entity("CognitiveMemory.Infrastructure.Persistence.Entities.ClaimEvidenceEntity", b =>
                 {
-                    b.HasOne("CognitiveMemory.Domain.Entities.Claim", "Claim")
-                        .WithMany("Evidence")
+                    b.HasOne("CognitiveMemory.Infrastructure.Persistence.Entities.SemanticClaimEntity", null)
+                        .WithMany()
                         .HasForeignKey("ClaimId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
-
-                    b.Navigation("Claim");
-                });
-
-            modelBuilder.Entity("CognitiveMemory.Domain.Entities.Claim", b =>
-                {
-                    b.Navigation("Evidence");
                 });
 #pragma warning restore 612, 618
         }

@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
+import { startDistServer } from './serve-dist.mjs';
 
 const parsedPort = Number.parseInt(process.env.PORT ?? '', 10);
 const port = Number.isFinite(parsedPort) && parsedPort > 0 ? `${parsedPort}` : '4200';
@@ -28,4 +29,35 @@ const child = spawn(process.execPath, ngArgs, {
   env: process.env
 });
 
-child.on('exit', code => process.exit(code ?? 1));
+let shuttingDown = false;
+
+const forwardSignal = signal => {
+  shuttingDown = true;
+  if (!child.killed) {
+    child.kill(signal);
+  }
+};
+
+process.on('SIGINT', () => forwardSignal('SIGINT'));
+process.on('SIGTERM', () => forwardSignal('SIGTERM'));
+
+child.on('exit', async code => {
+  if (shuttingDown) {
+    process.exit(code ?? 0);
+  }
+
+  if ((code ?? 1) === 0) {
+    process.exit(0);
+    return;
+  }
+
+  console.warn(`Angular dev server exited with code ${code}. Falling back to static dist server.`);
+
+  try {
+    await startDistServer({ rootDir: process.cwd(), port });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Static fallback failed: ${message}`);
+    process.exit(code ?? 1);
+  }
+});

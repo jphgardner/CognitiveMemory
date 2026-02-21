@@ -1,5 +1,6 @@
 using Aspire.Hosting;
 using Aspire.Hosting.Yarp;
+using Yarp.ReverseProxy.Forwarder;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
@@ -33,8 +34,19 @@ builder.AddYarp("gateway")
     .WithHostPort(8080)
     .WithConfiguration(config =>
     {
-        config.AddRoute("/v1/{**catch-all}", api);
-        config.AddRoute("/api/{**catch-all}", api);
+        var apiCluster = config
+            .AddCluster(api)
+            .WithForwarderRequestConfig(
+                new ForwarderRequestConfig
+                {
+                    // Generative streams can have long first-token latency under local models.
+                    ActivityTimeout = TimeSpan.FromHours(1),
+                    // Buffered proxy responses can break SSE behavior.
+                    AllowResponseBuffering = false
+                });
+
+        config.AddRoute("/v1/{**catch-all}", apiCluster);
+        config.AddRoute("/api/{**catch-all}", apiCluster);
         config.AddRoute("/{**catch-all}", frontend);
     })
     .WithReference(api)

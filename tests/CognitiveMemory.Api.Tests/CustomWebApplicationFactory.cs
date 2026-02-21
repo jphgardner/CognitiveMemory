@@ -1,10 +1,19 @@
-using CognitiveMemory.Application.Contracts;
-using CognitiveMemory.Application.Services;
-using CognitiveMemory.Domain.Entities;
+using CognitiveMemory.Application.Chat;
+using CognitiveMemory.Application.Consolidation;
+using CognitiveMemory.Application.Episodic;
+using CognitiveMemory.Application.Identity;
+using CognitiveMemory.Application.Planning;
+using CognitiveMemory.Application.Reasoning;
+using CognitiveMemory.Application.Semantic;
+using CognitiveMemory.Application.Truth;
+using CognitiveMemory.Domain.Memory;
+using CognitiveMemory.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace CognitiveMemory.Api.Tests;
 
@@ -12,151 +21,116 @@ public sealed class CustomWebApplicationFactory : WebApplicationFactory<Program>
 {
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        builder.UseEnvironment("Test");
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<IMemoryService>();
-            services.AddSingleton<IMemoryService, FakeMemoryService>();
+            services.RemoveAll(typeof(IHostedService));
+            services.RemoveAll(typeof(DbContextOptions<MemoryDbContext>));
+            services.RemoveAll(typeof(MemoryDbContext));
+
+            services.AddDbContext<MemoryDbContext>(options => options.UseInMemoryDatabase("cognitive-memory-tests"));
+
+            services.RemoveAll(typeof(IChatService));
+            services.RemoveAll(typeof(IEpisodicMemoryService));
+            services.RemoveAll(typeof(ISemanticMemoryService));
+            services.RemoveAll(typeof(IConsolidationService));
+            services.RemoveAll(typeof(ICognitiveReasoningService));
+            services.RemoveAll(typeof(IGoalPlanningService));
+            services.RemoveAll(typeof(IIdentityEvolutionService));
+            services.RemoveAll(typeof(ITruthMaintenanceService));
+
+            services.AddSingleton<IChatService>(new StubChatService());
+            services.AddSingleton<IEpisodicMemoryService>(new StubEpisodicService());
+            services.AddSingleton<ISemanticMemoryService>(new StubSemanticService());
+            services.AddSingleton<IConsolidationService>(new StubConsolidationService());
+            services.AddSingleton<ICognitiveReasoningService>(new StubReasoningService());
+            services.AddSingleton<IGoalPlanningService>(new StubPlanningService());
+            services.AddSingleton<IIdentityEvolutionService>(new StubIdentityService());
+            services.AddSingleton<ITruthMaintenanceService>(new StubTruthService());
         });
     }
 
-    private sealed class FakeMemoryService : IMemoryService
+    private sealed class StubChatService : IChatService
     {
-        public Task<MemoryHealthResponse> GetHealthAsync(CancellationToken cancellationToken)
-        {
-            return Task.FromResult(new MemoryHealthResponse
-            {
-                Database = "ok",
-                Cache = "ok",
-                CacheLatencyMs = 1,
-                Model = "ok",
-                ModelProvider = "InMemory"
-            });
-        }
+        public Task<ChatResponse> AskAsync(ChatRequest request, CancellationToken cancellationToken = default)
+            => Task.FromResult(new ChatResponse("test-session", "ok", DateTimeOffset.UtcNow, 2));
 
-        public Task<IReadOnlyList<ClaimListItem>> GetClaimsAsync(CancellationToken cancellationToken)
+        public async IAsyncEnumerable<ChatStreamChunk> AskStreamAsync(ChatRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            IReadOnlyList<ClaimListItem> claims =
-            [
-                new()
-                {
-                    ClaimId = Guid.NewGuid(),
-                    Predicate = "selected_transport",
-                    Confidence = 0.82,
-                    Status = ClaimStatus.Active,
-                    EvidenceCount = 1
-                }
-            ];
-
-            return Task.FromResult(claims);
+            yield return new ChatStreamChunk("test-session", "o", false, DateTimeOffset.UtcNow, 1);
+            yield return new ChatStreamChunk("test-session", "k", false, DateTimeOffset.UtcNow, 1);
+            await Task.Yield();
+            yield return new ChatStreamChunk("test-session", string.Empty, true, DateTimeOffset.UtcNow, 2);
         }
+    }
 
-        public Task<ClaimCreatedResponse> CreateClaimAsync(CreateClaimRequest request, CancellationToken cancellationToken)
-        {
-            return Task.FromResult(new ClaimCreatedResponse
-            {
-                ClaimId = Guid.NewGuid(),
-                SubjectEntityId = request.SubjectEntityId,
-                Predicate = request.Predicate,
-                LiteralValue = request.LiteralValue,
-                ObjectEntityId = request.ObjectEntityId,
-                ValueType = request.ValueType,
-                Confidence = request.Confidence,
-                Status = ClaimStatus.Active,
-                Scope = request.Scope,
-                CreatedAt = DateTimeOffset.UtcNow
-            });
-        }
+    private sealed class StubEpisodicService : IEpisodicMemoryService
+    {
+        public Task<EpisodicMemoryEvent> AppendAsync(AppendEpisodicMemoryRequest request, CancellationToken cancellationToken = default)
+            => Task.FromResult(new EpisodicMemoryEvent(Guid.NewGuid(), request.SessionId, request.Who, request.What, DateTimeOffset.UtcNow, request.Context, request.SourceReference));
 
-        public Task<ClaimLifecycleResponse> SupersedeClaimAsync(Guid claimId, Guid replacementClaimId, CancellationToken cancellationToken)
-        {
-            return Task.FromResult(new ClaimLifecycleResponse
-            {
-                ClaimId = claimId,
-                Status = ClaimStatus.Superseded,
-                UpdatedAt = DateTimeOffset.UtcNow
-            });
-        }
+        public Task<IReadOnlyList<EpisodicMemoryEvent>> QueryBySessionAsync(string sessionId, DateTimeOffset? fromUtc = null, DateTimeOffset? toUtc = null, int take = 100, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<EpisodicMemoryEvent>>([]);
+    }
 
-        public Task<ClaimLifecycleResponse> RetractClaimAsync(Guid claimId, CancellationToken cancellationToken)
-        {
-            return Task.FromResult(new ClaimLifecycleResponse
-            {
-                ClaimId = claimId,
-                Status = ClaimStatus.Retracted,
-                UpdatedAt = DateTimeOffset.UtcNow
-            });
-        }
+    private sealed class StubSemanticService : ISemanticMemoryService
+    {
+        public Task<SemanticClaim> CreateClaimAsync(CreateSemanticClaimRequest request, CancellationToken cancellationToken = default)
+            => Task.FromResult(new SemanticClaim(Guid.NewGuid(), request.Subject, request.Predicate, request.Value, request.Confidence, request.Scope, request.Status, request.ValidFromUtc, request.ValidToUtc, null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
 
-        public Task<IngestDocumentResponse> IngestDocumentAsync(IngestDocumentRequest request, CancellationToken cancellationToken)
-        {
-            return Task.FromResult(new IngestDocumentResponse
-            {
-                DocumentId = Guid.NewGuid(),
-                Status = "Queued",
-                ClaimsCreated = 1
-            });
-        }
+        public Task<ClaimEvidence> AddEvidenceAsync(AddClaimEvidenceRequest request, CancellationToken cancellationToken = default)
+            => Task.FromResult(new ClaimEvidence(Guid.NewGuid(), request.ClaimId, request.SourceType, request.SourceReference, request.ExcerptOrSummary, request.Strength, DateTimeOffset.UtcNow));
 
-        public Task<QueryClaimsResponse> QueryClaimsAsync(QueryClaimsRequest request, string requestId, CancellationToken cancellationToken)
-        {
-            return Task.FromResult(new QueryClaimsResponse
-            {
-                Claims =
-                [
-                    new QueryClaimItem
-                    {
-                        ClaimId = Guid.NewGuid(),
-                        Predicate = "selected_transport",
-                        LiteralValue = "SignalR",
-                        Score = 0.89,
-                        Confidence = 0.82,
-                        Evidence =
-                        [
-                            new QueryEvidenceItem
-                            {
-                                EvidenceId = Guid.NewGuid(),
-                                SourceType = "ChatTurn",
-                                SourceRef = "conv:1/turn:2",
-                                Strength = 0.78
-                            }
-                        ],
-                        Contradictions = []
-                    }
-                ],
-                Meta = new QueryMeta
-                {
-                    Strategy = "hybrid",
-                    LatencyMs = 12,
-                    RequestId = requestId,
-                    UncertaintyFlags = []
-                }
-            });
-        }
+        public Task<ClaimContradiction> AddContradictionAsync(AddClaimContradictionRequest request, CancellationToken cancellationToken = default)
+            => Task.FromResult(new ClaimContradiction(Guid.NewGuid(), request.ClaimAId, request.ClaimBId, request.Type, request.Severity, DateTimeOffset.UtcNow, request.Status));
 
-        public Task<AnswerQuestionResponse> AnswerAsync(AnswerQuestionRequest request, string requestId, CancellationToken cancellationToken)
-        {
-            return Task.FromResult(new AnswerQuestionResponse
-            {
-                Answer = "Based on available evidence, it appears that the selected transport is SignalR.",
-                Confidence = 0.82,
-                Citations =
-                [
-                    new AnswerCitation
-                    {
-                        ClaimId = Guid.NewGuid(),
-                        EvidenceId = Guid.NewGuid()
-                    }
-                ],
-                UncertaintyFlags = [],
-                Contradictions = [],
-                Conscience = new AnswerConscience
-                {
-                    Decision = "Approve",
-                    RiskScore = 0.12,
-                    PolicyVersion = "policy-2026-02-13"
-                },
-                RequestId = requestId
-            });
-        }
+        public Task<IReadOnlyList<SemanticClaim>> QueryClaimsAsync(string? subject = null, string? predicate = null, SemanticClaimStatus? status = null, int take = 100, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<SemanticClaim>>([]);
+
+        public Task<SemanticClaim> SupersedeClaimAsync(SupersedeSemanticClaimRequest request, CancellationToken cancellationToken = default)
+            => Task.FromResult(new SemanticClaim(Guid.NewGuid(), request.Subject, request.Predicate, request.Value, request.Confidence, request.Scope, SemanticClaimStatus.Active, null, null, null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
+
+        public Task<int> RunDecayAsync(int staleDays, double decayStep, double minConfidence, CancellationToken cancellationToken = default)
+            => Task.FromResult(0);
+    }
+
+    private sealed class StubConsolidationService : IConsolidationService
+    {
+        public Task<ConsolidationRunResult> RunOnceAsync(CancellationToken cancellationToken = default)
+            => Task.FromResult(new ConsolidationRunResult(1, 1, 1, 0, DateTimeOffset.UtcNow.AddSeconds(-1), DateTimeOffset.UtcNow));
+    }
+
+    private sealed class StubReasoningService : ICognitiveReasoningService
+    {
+        public Task<CognitiveReasoningRunResult> RunOnceAsync(CancellationToken cancellationToken = default)
+            => Task.FromResult(new CognitiveReasoningRunResult(10, 8, 2, 1, 1, 1, DateTimeOffset.UtcNow.AddSeconds(-1), DateTimeOffset.UtcNow));
+    }
+
+    private sealed class StubPlanningService : IGoalPlanningService
+    {
+        public Task<GoalPlanResult> GeneratePlanAsync(GenerateGoalPlanRequest request, CancellationToken cancellationToken = default)
+            => Task.FromResult(
+                new GoalPlanResult(
+                    Guid.NewGuid(),
+                    request.SessionId,
+                    request.Goal,
+                    [new GoalPlanStep(1, "Do thing", "generated")],
+                    ["signal"],
+                    DateTimeOffset.UtcNow));
+
+        public Task<RecordGoalOutcomeResult> RecordOutcomeAsync(RecordGoalOutcomeRequest request, CancellationToken cancellationToken = default)
+            => Task.FromResult(new RecordGoalOutcomeResult(request.PlanId, Guid.NewGuid(), true, DateTimeOffset.UtcNow));
+    }
+
+    private sealed class StubIdentityService : IIdentityEvolutionService
+    {
+        public Task<IdentityEvolutionRunResult> RunOnceAsync(CancellationToken cancellationToken = default)
+            => Task.FromResult(new IdentityEvolutionRunResult(10, 5, 2, 1, ["identity.project_focus"], DateTimeOffset.UtcNow.AddSeconds(-1), DateTimeOffset.UtcNow));
+    }
+
+    private sealed class StubTruthService : ITruthMaintenanceService
+    {
+        public Task<TruthMaintenanceRunResult> RunOnceAsync(CancellationToken cancellationToken = default)
+            => Task.FromResult(new TruthMaintenanceRunResult(12, 2, 1, 1, 1, ["clarify"], DateTimeOffset.UtcNow.AddSeconds(-1), DateTimeOffset.UtcNow));
     }
 }

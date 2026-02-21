@@ -1,540 +1,398 @@
-<div class="min-h-screen text-slate-100">
-  <div class="mx-auto max-w-[1600px] px-4 py-6 lg:px-8">
-    <header
-      class="rounded-2xl border border-slate-800/70 bg-slate-950/60 p-5 shadow-[0_0_0_1px_rgba(15,23,42,0.35),0_30px_80px_-45px_rgba(34,211,238,0.65)] backdrop-blur"
-    >
-      <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h1 class="text-2xl font-semibold tracking-tight text-cyan-100">
-            CognitiveMemory Operator Console
-          </h1>
-          <p class="mt-1 text-sm text-slate-300">
-            Streamed chat UI with full API observability, including tool execution results and
-            metadata.
-          </p>
+<div class="enterprise-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <p class="brand-kicker">CognitiveMemory</p>
+      <h1>Enterprise Console</h1>
+      <p class="brand-subtitle">Session-driven intelligence operations</p>
+    </div>
+
+    <nav class="nav">
+      <button
+        *ngFor="let item of navigation"
+        type="button"
+        class="nav-item"
+        [class.active]="isPageActive(item.id)"
+        (click)="setActivePage(item.id)">
+        <strong>{{ item.label }}</strong>
+        <span>{{ item.caption }}</span>
+      </button>
+    </nav>
+
+    <div class="side-metrics">
+      <div class="metric-row">
+        <span class="label">Session</span>
+        <code>{{ sessionId.slice(0, 12) }}</code>
+      </div>
+      <div class="metric-row">
+        <span class="label">Assistant Turns</span>
+        <strong>{{ assistantTurnCount() }}</strong>
+      </div>
+      <div class="metric-row">
+        <span class="label">Tool Success</span>
+        <strong>{{ toolSuccessRate() }}%</strong>
+      </div>
+      <div class="metric-row">
+        <span class="label">Avg Latency</span>
+        <strong>{{ averageResponseSeconds() }}s</strong>
+      </div>
+    </div>
+  </aside>
+
+  <section class="workspace">
+    <header class="topbar">
+      <div>
+        <p class="kicker">{{ activePageCaption() }}</p>
+        <h2>{{ activePageLabel() }}</h2>
+      </div>
+
+      <div class="topbar-right">
+        <div class="status" [ngClass]="statusClasses()">
+          <span class="dot"></span>
+          <span>{{ statusText }}</span>
         </div>
 
-        <div class="flex flex-wrap items-center gap-2 text-xs">
-          <span
-            class="rounded-full border border-slate-700 bg-slate-900/70 px-3 py-1 text-slate-300"
-          >
-            model: <span class="font-mono text-cyan-200">{{ selectedModel }}</span>
-          </span>
-          <span
-            class="rounded-full border border-slate-700 bg-slate-900/70 px-3 py-1 text-slate-300"
-          >
-            turns: <span class="font-semibold text-slate-100">{{ messages.length }}</span>
-          </span>
-          <span
-            class="rounded-full border border-slate-700 bg-slate-900/70 px-3 py-1 text-slate-300"
-          >
-            mode:
-            <span class="font-semibold text-slate-100">{{ sending ? 'streaming' : 'ready' }}</span>
-          </span>
+        <div class="connection">
+          <label>
+            <span class="label">API Base</span>
+            <input [(ngModel)]="apiBaseUrl" [disabled]="streaming" />
+          </label>
+          <label>
+            <span class="label">Session ID</span>
+            <input [(ngModel)]="sessionId" [disabled]="streaming" />
+          </label>
         </div>
       </div>
     </header>
 
-    <main
-      class="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_430px] 2xl:grid-cols-[minmax(0,1fr)_480px]"
-    >
-      <section
-        class="rounded-2xl border border-slate-800/70 bg-slate-950/60 p-4 shadow-xl backdrop-blur"
-      >
-        <div class="grid gap-3 md:grid-cols-12">
-          <label class="md:col-span-4">
-            <span
-              class="mb-1 block text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400"
-              >API Base URL</span
-            >
-            <input
-              type="text"
-              [(ngModel)]="apiBaseUrl"
-              name="apiBaseUrl"
-              placeholder="/v1"
-              [disabled]="sending"
-              class="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/30"
-            />
-          </label>
+    <main class="content">
+      <section class="page" *ngIf="isPageActive('overview')">
+        <div class="kpi-grid">
+          <article class="kpi-card">
+            <p class="label">Conversation Volume</p>
+            <h3>{{ turns.length }}</h3>
+            <span>Total records (user + assistant)</span>
+          </article>
 
-          <label class="md:col-span-3">
-            <span
-              class="mb-1 block text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400"
-              >API Key</span
-            >
-            <input
-              type="password"
-              [(ngModel)]="apiKey"
-              name="apiKey"
-              placeholder="local-dev-key"
-              [disabled]="sending"
-              class="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/30"
-            />
-          </label>
+          <article class="kpi-card">
+            <p class="label">Tool Reliability</p>
+            <h3>{{ toolSuccessRate() }}%</h3>
+            <span>{{ successfulToolCalls() }}/{{ totalToolCalls() }} successful executions</span>
+          </article>
 
-          <label class="md:col-span-3">
-            <span
-              class="mb-1 block text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400"
-              >Model</span
-            >
-            <select
-              [(ngModel)]="selectedModel"
-              name="selectedModel"
-              [disabled]="sending || loadingModels"
-              class="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/30"
-            >
-              @for (model of models; track model) {
-                <option [value]="model">{{ model }}</option>
-              }
-            </select>
-          </label>
+          <article class="kpi-card">
+            <p class="label">Average Response</p>
+            <h3>{{ averageResponseSeconds() }}s</h3>
+            <span>Measured from stream start to completion</span>
+          </article>
 
-          <div class="flex items-end gap-2 md:col-span-2">
-            <button
-              type="button"
-              (click)="refreshModels()"
-              [disabled]="loadingModels || sending"
-              class="inline-flex w-full items-center justify-center rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-2 text-sm font-medium text-cyan-200 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {{ loadingModels ? 'Loading…' : 'Refresh' }}
-            </button>
-
-            <button
-              type="button"
-              (click)="clearChat()"
-              [disabled]="messages.length === 0 || sending"
-              class="inline-flex items-center justify-center rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-medium text-slate-200 transition hover:border-slate-500 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Clear
-            </button>
-          </div>
+          <article class="kpi-card">
+            <p class="label">Primary Memory Layer</p>
+            <h3>{{ topMemoryLayer() }}</h3>
+            <span>Most frequently referenced layer</span>
+          </article>
         </div>
 
-        <div class="mt-3 rounded-xl border px-3 py-2 text-sm" [ngClass]="getStatusClasses()">
-          {{ status }}
-        </div>
-
-        <div class="mt-4 rounded-xl border border-slate-800 bg-slate-900/60 p-3">
-          <div class="mb-2 flex items-center justify-between gap-2">
-            <h2 class="text-sm font-semibold text-slate-200">Conversation</h2>
-            <div class="text-[11px] uppercase tracking-[0.14em] text-slate-500">
-              Click assistant messages to inspect metadata
+        <div class="chart-grid">
+          <article class="panel chart-panel">
+            <div class="panel-head">
+              <h3>Assistant Output Trend</h3>
+              <span>last 14 turns</span>
             </div>
-          </div>
+            <svg viewBox="0 0 430 130" class="trend-chart" *ngIf="activityPolylinePoints(); else noTrend">
+              <defs>
+                <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#0f8b8d" stop-opacity="0.42" />
+                  <stop offset="100%" stop-color="#0f8b8d" stop-opacity="0.02" />
+                </linearGradient>
+              </defs>
+              <polyline [attr.points]="activityAreaPoints()" fill="url(#trendFill)" stroke="none"></polyline>
+              <polyline [attr.points]="activityPolylinePoints()" fill="none" stroke="#0f8b8d" stroke-width="3" stroke-linecap="round"></polyline>
+            </svg>
+            <ng-template #noTrend>
+              <p class="placeholder">No trend data yet. Stream a few prompts to populate this chart.</p>
+            </ng-template>
+          </article>
 
-          <div class="cm-scrollbar max-h-[60vh] min-h-[360px] space-y-3 overflow-auto pr-1">
-            @if (messages.length === 0) {
-              <div
-                class="rounded-xl border border-dashed border-slate-700 bg-slate-950/60 p-6 text-center text-sm text-slate-400"
-              >
-                Start chatting. The right panel will display API-level telemetry and tool outputs.
-              </div>
-            }
-
-            @for (message of messages; track trackByIndex($index)) {
-              <article
-                class="rounded-xl border p-3 transition"
-                [ngClass]="{
-                  'ml-auto max-w-[86%] border-cyan-500/40 bg-cyan-500/15 text-cyan-50':
-                    message.role === 'user',
-                  'mr-auto max-w-[92%] cursor-pointer border-slate-700 bg-slate-800/85 text-slate-100 hover:border-cyan-400/50':
-                    message.role === 'assistant',
-                  'ring-2 ring-cyan-400/50': message.role === 'assistant' && isSelected($index),
-                }"
-                (click)="selectMessage($index)"
-              >
-                <div
-                  class="flex items-center justify-between gap-2 text-[11px] uppercase tracking-[0.16em]"
-                >
-                  <span
-                    class="font-semibold"
-                    [ngClass]="message.role === 'user' ? 'text-cyan-200' : 'text-slate-300'"
-                  >
-                    {{ message.role === 'user' ? 'User' : 'Assistant' }}
-                  </span>
-
-                  @if (message.role === 'assistant') {
-                    <div class="flex items-center gap-1.5 text-[10px]">
-                      @if (message.metadata?.confidence !== undefined) {
-                        <span
-                          class="rounded-full border border-slate-600 bg-slate-900/70 px-2 py-0.5 text-slate-300"
-                        >
-                          confidence {{ message.metadata?.confidence | number: '1.2-2' }}
-                        </span>
-                      }
-                      @if (usageTotal(message) > 0) {
-                        <span
-                          class="rounded-full border border-emerald-500/35 bg-emerald-500/15 px-2 py-0.5 text-emerald-200"
-                        >
-                          {{ usageTotal(message) }} tokens
-                        </span>
-                      }
-                    </div>
-                  }
+          <article class="panel chart-panel">
+            <div class="panel-head">
+              <h3>Memory Layer Distribution</h3>
+              <span>evidence coverage</span>
+            </div>
+            <div class="bars" *ngIf="memoryLayerMetrics().length > 0; else noLayers">
+              <div class="bar-row" *ngFor="let layer of memoryLayerMetrics()">
+                <div class="bar-label">
+                  <strong>{{ layer.layer }}</strong>
+                  <span>{{ layer.count }} hits</span>
                 </div>
-
-                <p class="mt-2 whitespace-pre-wrap text-sm leading-relaxed">
-                  {{ message.content }}
-                </p>
-
-                @if (message.role === 'assistant') {
-                  <div class="mt-3 flex flex-wrap gap-1.5 text-[11px]">
-                    @if ((message.metadata?.toolExecutions?.length ?? 0) > 0) {
-                      <span
-                        class="rounded-full border border-indigo-500/40 bg-indigo-500/15 px-2 py-0.5 text-indigo-200"
-                      >
-                        tools {{ message.metadata?.toolExecutions?.length }}
-                      </span>
-                    }
-                    @if ((message.metadata?.uncertaintyFlags?.length ?? 0) > 0) {
-                      <span
-                        class="rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-amber-200"
-                      >
-                        uncertainty {{ message.metadata?.uncertaintyFlags?.length }}
-                      </span>
-                    }
-                    @if (message.diagnostics?.latencyMs) {
-                      <span
-                        class="rounded-full border border-slate-600 bg-slate-900/70 px-2 py-0.5 text-slate-300"
-                      >
-                        {{ message.diagnostics?.latencyMs }}ms
-                      </span>
-                    }
-                  </div>
-                }
-              </article>
-            }
-          </div>
+                <div class="bar-track">
+                  <div class="bar-fill" [style.width.%]="layer.percent"></div>
+                </div>
+                <span class="bar-value">{{ layer.percent }}%</span>
+              </div>
+            </div>
+            <ng-template #noLayers>
+              <p class="placeholder">Memory layer telemetry will appear after tool-audited responses.</p>
+            </ng-template>
+          </article>
         </div>
 
-        <form class="mt-4 space-y-3" (ngSubmit)="send()">
-          <textarea
-            [(ngModel)]="userInput"
-            name="prompt"
-            rows="3"
-            placeholder="Ask something..."
-            [disabled]="sending"
-            class="w-full resize-y rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/30"
-          ></textarea>
-
-          <div class="flex justify-end">
-            <button
-              type="submit"
-              [disabled]="sending || !userInput.trim()"
-              class="inline-flex min-w-32 items-center justify-center rounded-xl border border-cyan-400/50 bg-cyan-500/20 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-500/30 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {{ sending ? 'Sending…' : 'Send' }}
-            </button>
+        <article class="panel table-panel">
+          <div class="panel-head">
+            <h3>Recent Tool Executions</h3>
+            <span>{{ recentToolEvents().length }} captured</span>
           </div>
-        </form>
+
+          <div class="table-wrap" *ngIf="recentToolEvents().length > 0; else noTools">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Tool</th>
+                  <th>Mode</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr *ngFor="let call of recentToolEvents()">
+                  <td>{{ call.executedAtUtc | date: 'HH:mm:ss' }}</td>
+                  <td>{{ call.toolName }}</td>
+                  <td>{{ call.isWrite ? 'Write' : 'Read' }}</td>
+                  <td>
+                    <span class="pill" [class.ok]="call.succeeded" [class.fail]="!call.succeeded">
+                      {{ call.succeeded ? 'Success' : 'Fail' }}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <ng-template #noTools>
+            <p class="placeholder">No tool events observed yet.</p>
+          </ng-template>
+        </article>
       </section>
 
-      <aside
-        class="rounded-2xl border border-slate-800/70 bg-slate-950/60 p-4 shadow-xl backdrop-blur xl:sticky xl:top-6 xl:max-h-[90vh] xl:overflow-auto"
-      >
-        <div class="mb-3">
-          <h2 class="text-lg font-semibold text-cyan-100">API Observability</h2>
-          <p class="mt-1 text-xs text-slate-400">
-            Selected assistant turn details, including tool execution result payloads.
-          </p>
+      <section class="page" *ngIf="isPageActive('chat')">
+        <article class="panel chat-panel">
+          <div class="panel-head">
+            <h3>Chat Stream</h3>
+            <button type="button" (click)="clearChat()" [disabled]="streaming || turns.length === 0">Clear Log</button>
+          </div>
+
+          <div class="chat-log">
+            <article *ngFor="let turn of turns; let i = index" class="turn" [class.user]="turn.role === 'user'" [class.assistant]="turn.role === 'assistant'">
+              <div class="turn-role">{{ turn.role }}</div>
+              <div class="turn-top" *ngIf="turn.role === 'assistant'">
+                <button type="button" class="thinking-toggle" (click)="toggleThinkingForTurn(i)">
+                  {{ isThinkingExpanded(i) ? 'Hide Thinking Stages' : 'Show Thinking Stages' }}
+                </button>
+              </div>
+
+              <div class="thinking-box inline" *ngIf="turn.role === 'assistant' && isThinkingExpanded(i)">
+                <ol *ngIf="assistantThinkingStages(turn).length > 0; else noStages">
+                  <li *ngFor="let stage of assistantThinkingStages(turn)" [innerHTML]="thinkingStageHtml(stage)"></li>
+                </ol>
+                <ng-template #noStages>
+                  <p>No thinking stages available for this response.</p>
+                </ng-template>
+              </div>
+
+              <div class="turn-text markdown-body" [innerHTML]="assistantDisplayHtml(turn)"></div>
+
+              <div class="evidence" *ngIf="turn.role === 'assistant'">
+                <div class="evidence-head">
+                  <span class="label">Memory Evidence</span>
+                  <span class="label">Tools: {{ assistantToolCalls(turn).length }}</span>
+                </div>
+
+                <div class="evidence-layers">
+                  <span *ngIf="assistantMemoryLayers(turn).length === 0" class="layer-chip muted">none detected</span>
+                  <span *ngFor="let layer of assistantMemoryLayers(turn)" class="layer-chip">{{ layer }}</span>
+                </div>
+
+                <details class="tool-call-list" *ngIf="assistantToolCalls(turn).length > 0">
+                  <summary>Show tool calls</summary>
+                  <div class="tool-call" *ngFor="let call of assistantToolCalls(turn)">
+                    <div class="tool-line">
+                      <strong>{{ call.toolName }}</strong>
+                      <span>{{ call.succeeded ? 'ok' : 'failed' }}</span>
+                      <span>{{ call.executedAtUtc | date: 'HH:mm:ss.SSS' }}</span>
+                    </div>
+                    <div class="tool-error" *ngIf="!call.succeeded && call.error">
+                      {{ call.error }}
+                    </div>
+                  </div>
+                </details>
+              </div>
+            </article>
+
+            <div *ngIf="turns.length === 0" class="empty">No messages yet. Start streaming below.</div>
+          </div>
+
+          <form class="composer" (ngSubmit)="sendStream()">
+            <textarea
+              [(ngModel)]="messageInput"
+              name="message"
+              rows="5"
+              placeholder="Ask anything..."
+              [disabled]="streaming"></textarea>
+
+            <div class="composer-row">
+              <p>Latest assistant preview: {{ latestAssistantPreview() }}</p>
+              <button type="submit" [disabled]="streaming || !messageInput.trim()">
+                {{ streaming ? 'Streaming...' : 'Send Stream' }}
+              </button>
+            </div>
+          </form>
+        </article>
+      </section>
+
+      <section class="page" *ngIf="isPageActive('analytics')">
+        <div class="kpi-grid">
+          <article class="kpi-card">
+            <p class="label">Responses / Min</p>
+            <h3>{{ responseThroughputPerMinute() }}</h3>
+            <span>Assistant turn throughput</span>
+          </article>
+          <article class="kpi-card">
+            <p class="label">Tool Calls</p>
+            <h3>{{ totalToolCalls() }}</h3>
+            <span>Audited tool invocations</span>
+          </article>
+          <article class="kpi-card">
+            <p class="label">Successes</p>
+            <h3>{{ successfulToolCalls() }}</h3>
+            <span>Successful tool executions</span>
+          </article>
+          <article class="kpi-card">
+            <p class="label">Failures</p>
+            <h3>{{ totalToolCalls() - successfulToolCalls() }}</h3>
+            <span>Execution failures tracked</span>
+          </article>
         </div>
 
-        @if (selectedAssistantMessage; as message) {
-          <div class="space-y-4">
-            <section class="grid grid-cols-2 gap-2">
-              <article class="rounded-xl border border-slate-800 bg-slate-900/75 p-2.5">
-                <div class="text-[10px] uppercase tracking-[0.14em] text-slate-500">Confidence</div>
-                <div class="mt-1 text-xl font-semibold text-cyan-200">
-                  {{ message.metadata?.confidence | number: '1.2-2' }}
+        <div class="chart-grid">
+          <article class="panel chart-panel">
+            <div class="panel-head">
+              <h3>Tool Outcome Composition</h3>
+              <span>success vs fail</span>
+            </div>
+            <div class="bars" *ngIf="toolOutcomeMetrics().length > 0; else noOutcomes">
+              <div class="bar-row" *ngFor="let row of toolOutcomeMetrics()">
+                <div class="bar-label">
+                  <strong>{{ row.label }}</strong>
+                  <span>{{ row.count }} events</span>
                 </div>
-              </article>
-              <article class="rounded-xl border border-slate-800 bg-slate-900/75 p-2.5">
-                <div class="text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                  Total Tokens
+                <div class="bar-track">
+                  <div class="bar-fill" [style.width.%]="row.percent"></div>
                 </div>
-                <div class="mt-1 text-xl font-semibold text-emerald-200">
-                  {{ usageTotal(message) }}
-                </div>
-              </article>
-              <article class="rounded-xl border border-slate-800 bg-slate-900/75 p-2.5">
-                <div class="text-[10px] uppercase tracking-[0.14em] text-slate-500">Tool Calls</div>
-                <div class="mt-1 text-xl font-semibold text-indigo-200">
-                  {{ selectedToolExecutions.length }}
-                </div>
-              </article>
-              <article class="rounded-xl border border-slate-800 bg-slate-900/75 p-2.5">
-                <div class="text-[10px] uppercase tracking-[0.14em] text-slate-500">
-                  Contradictions
-                </div>
-                <div class="mt-1 text-xl font-semibold text-rose-200">
-                  {{ selectedContradictions.length }}
-                </div>
-              </article>
-            </section>
-
-            <section class="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
-              <h3 class="text-xs font-semibold uppercase tracking-widest text-slate-400">
-                Completion Envelope
-              </h3>
-              <dl class="mt-2 grid gap-2 text-xs text-slate-300">
-                <div class="grid grid-cols-[110px_1fr] gap-2">
-                  <dt class="text-slate-500">Completion ID</dt>
-                  <dd class="truncate font-mono text-[11px]">
-                    {{ message.diagnostics?.completionId || 'n/a' }}
-                  </dd>
-                </div>
-                <div class="grid grid-cols-[110px_1fr] gap-2">
-                  <dt class="text-slate-500">Model</dt>
-                  <dd>{{ message.diagnostics?.model || selectedModel }}</dd>
-                </div>
-                <div class="grid grid-cols-[110px_1fr] gap-2">
-                  <dt class="text-slate-500">Created</dt>
-                  <dd>{{ formatCreatedAt(message.diagnostics?.created) }}</dd>
-                </div>
-                <div class="grid grid-cols-[110px_1fr] gap-2">
-                  <dt class="text-slate-500">Finish Reason</dt>
-                  <dd>{{ message.diagnostics?.finishReason || 'n/a' }}</dd>
-                </div>
-                <div class="grid grid-cols-[110px_1fr] gap-2">
-                  <dt class="text-slate-500">Stream Mode</dt>
-                  <dd>{{ message.diagnostics?.streamMode ? 'SSE' : 'JSON' }}</dd>
-                </div>
-                <div class="grid grid-cols-[110px_1fr] gap-2">
-                  <dt class="text-slate-500">Latency</dt>
-                  <dd>
-                    {{
-                      message.diagnostics?.latencyMs ? message.diagnostics?.latencyMs + 'ms' : 'n/a'
-                    }}
-                  </dd>
-                </div>
-              </dl>
-
-              @if (message.diagnostics?.usage) {
-                <div
-                  class="mt-3 grid grid-cols-3 gap-2 rounded-lg border border-slate-700 bg-slate-950/70 p-2 text-center text-[11px] text-slate-300"
-                >
-                  <div>
-                    <div class="uppercase tracking-wide text-slate-500">Prompt</div>
-                    <div class="mt-1 text-sm font-semibold text-slate-100">
-                      {{ message.diagnostics?.usage?.promptTokens || 0 }}
-                    </div>
-                  </div>
-                  <div>
-                    <div class="uppercase tracking-wide text-slate-500">Completion</div>
-                    <div class="mt-1 text-sm font-semibold text-slate-100">
-                      {{ message.diagnostics?.usage?.completionTokens || 0 }}
-                    </div>
-                  </div>
-                  <div>
-                    <div class="uppercase tracking-wide text-slate-500">Total</div>
-                    <div class="mt-1 text-sm font-semibold text-cyan-200">
-                      {{ usageTotal(message) }}
-                    </div>
-                  </div>
-                </div>
-              }
-            </section>
-
-            <section class="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
-              <h3 class="text-xs font-semibold uppercase tracking-widest text-slate-400">
-                Conscience + Uncertainty
-              </h3>
-
-              <div class="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-800">
-                <div
-                  class="h-full rounded-full bg-gradient-to-r from-cyan-400 via-sky-400 to-indigo-400"
-                  [style.width.%]="normalizeConfidence(message.metadata?.confidence)"
-                ></div>
+                <span class="bar-value">{{ row.percent }}%</span>
               </div>
+            </div>
+            <ng-template #noOutcomes>
+              <p class="placeholder">Outcome analytics will populate after tool executions.</p>
+            </ng-template>
+          </article>
 
-              <div class="mt-3 grid gap-1.5 text-xs text-slate-300">
-                <div>
-                  <span class="text-slate-500">Decision:</span>
-                  {{ message.metadata?.conscience?.decision || 'n/a' }}
-                </div>
-                <div>
-                  <span class="text-slate-500">Risk score:</span>
-                  {{ message.metadata?.conscience?.riskScore ?? 'n/a' }}
-                </div>
-                <div>
-                  <span class="text-slate-500">Policy version:</span>
-                  {{ message.metadata?.conscience?.policyVersion || 'n/a' }}
-                </div>
-              </div>
+          <article class="panel chart-panel">
+            <div class="panel-head">
+              <h3>Assistant Output Trend</h3>
+              <span>live stream analysis</span>
+            </div>
+            <svg viewBox="0 0 430 130" class="trend-chart" *ngIf="activityPolylinePoints(); else noTrendAnalytics">
+              <defs>
+                <linearGradient id="analyticsFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#f28a3f" stop-opacity="0.42" />
+                  <stop offset="100%" stop-color="#f28a3f" stop-opacity="0.03" />
+                </linearGradient>
+              </defs>
+              <polyline [attr.points]="activityAreaPoints()" fill="url(#analyticsFill)" stroke="none"></polyline>
+              <polyline [attr.points]="activityPolylinePoints()" fill="none" stroke="#f28a3f" stroke-width="3" stroke-linecap="round"></polyline>
+            </svg>
+            <ng-template #noTrendAnalytics>
+              <p class="placeholder">No assistant trend data yet.</p>
+            </ng-template>
+          </article>
+        </div>
 
-              @if (selectedReasonCodes.length > 0) {
-                <div class="mt-3 flex flex-wrap gap-1.5">
-                  @for (code of selectedReasonCodes; track trackByIndex($index)) {
-                    <span
-                      class="rounded-full border border-indigo-500/40 bg-indigo-500/15 px-2 py-1 text-[11px] text-indigo-200"
-                      >{{ code }}</span
-                    >
-                  }
-                </div>
-              }
+        <article class="panel insight-panel">
+          <h3>Latest Assistant Output</h3>
+          <p>{{ latestAssistantPreview(280) }}</p>
+        </article>
+      </section>
 
-              @if (selectedUncertaintyFlags.length > 0) {
-                <div class="mt-2 flex flex-wrap gap-1.5">
-                  @for (flag of selectedUncertaintyFlags; track trackByIndex($index)) {
-                    <span
-                      class="rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-1 text-[11px] text-amber-200"
-                      >{{ flag }}</span
-                    >
-                  }
-                </div>
-              }
-            </section>
-
-            <section class="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
-              <h3 class="text-xs font-semibold uppercase tracking-widest text-slate-400">
-                Tool Execution Results
-              </h3>
-
-              @if (selectedToolExecutions.length === 0) {
-                <p class="mt-2 text-xs text-slate-400">
-                  No tool executions were recorded for this response.
-                </p>
-              } @else {
-                <div class="cm-scrollbar mt-2 max-h-[340px] space-y-2 overflow-auto pr-1">
-                  @for (tool of selectedToolExecutions; track trackByIndex($index)) {
-                    <article
-                      class="rounded-lg border border-slate-700 bg-slate-950/75 p-2.5 text-xs text-slate-300"
-                    >
-                      <div class="flex items-center justify-between gap-2">
-                        <div class="truncate font-mono text-[11px] text-cyan-200">
-                          {{ tool.toolName || 'tool' }}
-                        </div>
-                        <span
-                          class="rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide"
-                          [ngClass]="getToolBadgeClasses(tool.ok)"
-                        >
-                          {{ toolStatusText(tool.ok) }}
-                        </span>
-                      </div>
-
-                      <div class="mt-2 grid gap-1 text-[11px]">
-                        <div>
-                          <span class="text-slate-500">Source:</span> {{ tool.source || 'agent' }}
-                        </div>
-                        <div>
-                          <span class="text-slate-500">Code:</span> {{ tool.code || 'n/a' }}
-                        </div>
-                        <div>
-                          <span class="text-slate-500">Result count:</span>
-                          {{ tool.resultCount ?? 0 }}
-                        </div>
-                        <div>
-                          <span class="text-slate-500">Idempotency:</span>
-                          {{ tool.idempotencyKey || 'n/a' }}
-                        </div>
-                        <div>
-                          <span class="text-slate-500">Trace:</span>
-                          <span class="font-mono">{{ tool.traceId || 'n/a' }}</span>
-                        </div>
-                        <div>
-                          <span class="text-slate-500">Message:</span> {{ tool.message || 'n/a' }}
-                        </div>
-                      </div>
-
-                      @if (tool.eventIds && tool.eventIds.length > 0) {
-                        <div class="mt-2 flex flex-wrap gap-1">
-                          @for (eventId of tool.eventIds; track trackByIndex($index)) {
-                            <span
-                              class="rounded-full border border-slate-600 bg-slate-900/70 px-2 py-0.5 font-mono text-[10px] text-slate-300"
-                              >{{ eventId }}</span
-                            >
-                          }
-                        </div>
-                      }
-
-                      @if (hasToolData(tool)) {
-                        <details
-                          class="mt-2 rounded-md border border-slate-700 bg-slate-900/60 p-2"
-                          open
-                        >
-                          <summary class="cursor-pointer text-[11px] font-medium text-slate-300">
-                            Tool Data
-                          </summary>
-                          <pre
-                            class="cm-scrollbar mt-2 max-h-44 overflow-auto rounded-md border border-slate-700 bg-slate-950/80 p-2 text-[11px] leading-relaxed text-slate-300"
-                            >{{ tool.data | json }}</pre
-                          >
-                        </details>
-                      }
-                    </article>
-                  }
-                </div>
-              }
-            </section>
-
-            <section class="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
-              <h3 class="text-xs font-semibold uppercase tracking-widest text-slate-400">
-                Citations
-              </h3>
-
-              @if (selectedCitations.length === 0) {
-                <p class="mt-2 text-xs text-slate-400">No citations provided by API metadata.</p>
-              } @else {
-                <ul class="mt-2 space-y-1.5 text-xs text-slate-300">
-                  @for (citation of selectedCitations; track trackByIndex($index)) {
-                    <li class="rounded-lg border border-slate-700 bg-slate-950/60 px-2 py-1.5">
-                      <span class="font-semibold text-slate-200">{{
-                        citation.sourceType || 'source'
-                      }}</span>
-                      · {{ citation.sourceRef || 'unknown ref' }}
-                    </li>
-                  }
-                </ul>
-              }
-            </section>
-
-            <section class="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
-              <h3 class="text-xs font-semibold uppercase tracking-widest text-slate-400">
-                Contradictions
-              </h3>
-
-              @if (selectedContradictions.length === 0) {
-                <p class="mt-2 text-xs text-slate-400">No contradiction items returned.</p>
-              } @else {
-                <ul class="mt-2 space-y-1.5 text-xs text-slate-300">
-                  @for (contradiction of selectedContradictions; track trackByIndex($index)) {
-                    <li class="rounded-lg border border-slate-700 bg-slate-950/60 px-2 py-1.5">
-                      {{ contradiction.type || 'unknown' }} ·
-                      {{ contradiction.severity || 'n/a' }} · {{ contradiction.status || 'n/a' }}
-                    </li>
-                  }
-                </ul>
-              }
-            </section>
-
-            <details class="rounded-xl border border-slate-800 bg-slate-900/70 p-3" open>
-              <summary
-                class="cursor-pointer text-xs font-semibold uppercase tracking-widest text-slate-400"
-              >
-                Raw Metadata JSON
-              </summary>
-              <pre
-                class="cm-scrollbar mt-2 max-h-72 overflow-auto rounded-lg border border-slate-700 bg-slate-950/80 p-2 text-[11px] leading-relaxed text-slate-300"
-                >{{ message.rawMetadataJson || '{}' }}</pre
-              >
-            </details>
-
-            @if (!message.metadata && hasAnyApiSignals(message)) {
-              <div
-                class="rounded-xl border border-slate-800 bg-slate-900/70 p-3 text-xs text-slate-300"
-              >
-                Completion envelope exists, but metadata payload was not present.
-              </div>
-            }
+      <section class="page" *ngIf="isPageActive('operations')">
+        <div class="ops-grid">
+          <div class="op-card">
+            <h3>Consolidation + Decay</h3>
+            <div class="row">
+              <button type="button" (click)="runConsolidation()" [disabled]="streaming">Run Consolidation</button>
+              <button type="button" (click)="runDecay()" [disabled]="streaming">Run Decay</button>
+            </div>
+            <pre *ngIf="consolidationResult">{{ consolidationResult | json }}</pre>
+            <pre *ngIf="decayResult">{{ decayResult | json }}</pre>
           </div>
-        } @else {
-          <div
-            class="rounded-xl border border-dashed border-slate-700 bg-slate-900/60 p-4 text-sm text-slate-400"
-          >
-            No assistant response selected yet.
+
+          <div class="op-card">
+            <h3>Episodic Timeline</h3>
+            <div class="row">
+              <label>
+                <span class="label">Take</span>
+                <input type="number" [(ngModel)]="episodicTake" name="episodicTake" min="1" max="200" />
+              </label>
+              <button type="button" (click)="loadEpisodic()" [disabled]="streaming">Load Events</button>
+            </div>
+            <pre>{{ episodicEvents | json }}</pre>
           </div>
-        }
-      </aside>
+
+          <div class="op-card">
+            <h3>Semantic Claims</h3>
+            <div class="grid-2">
+              <label><span class="label">Subject</span><input [(ngModel)]="claimSubject" name="claimSubject" /></label>
+              <label><span class="label">Predicate</span><input [(ngModel)]="claimPredicate" name="claimPredicate" /></label>
+              <label class="wide"><span class="label">Value</span><input [(ngModel)]="claimValue" name="claimValue" /></label>
+              <label><span class="label">Confidence</span><input type="number" [(ngModel)]="claimConfidence" name="claimConfidence" min="0" max="1" step="0.05" /></label>
+            </div>
+            <div class="row">
+              <button type="button" (click)="createClaim()" [disabled]="streaming">Create Claim</button>
+            </div>
+
+            <div class="grid-2 query">
+              <label><span class="label">Filter Subject</span><input [(ngModel)]="semanticSubject" name="semanticSubject" /></label>
+              <label><span class="label">Filter Predicate</span><input [(ngModel)]="semanticPredicate" name="semanticPredicate" /></label>
+            </div>
+            <button type="button" (click)="queryClaims()" [disabled]="streaming">Query Claims</button>
+            <pre>{{ semanticResults | json }}</pre>
+          </div>
+
+          <div class="op-card">
+            <h3>Procedural Memory</h3>
+            <div class="grid-2">
+              <label><span class="label">Trigger</span><input [(ngModel)]="routineTrigger" name="routineTrigger" /></label>
+              <label><span class="label">Name</span><input [(ngModel)]="routineName" name="routineName" /></label>
+              <label class="wide"><span class="label">Outcome</span><input [(ngModel)]="routineOutcome" name="routineOutcome" /></label>
+            </div>
+            <label>
+              <span class="label">Steps (one per line)</span>
+              <textarea [(ngModel)]="routineSteps" name="routineSteps" rows="4"></textarea>
+            </label>
+            <button type="button" (click)="upsertRoutine()" [disabled]="streaming">Save Routine</button>
+          </div>
+
+          <div class="op-card">
+            <h3>Self Model</h3>
+            <div class="grid-2">
+              <label><span class="label">Key</span><input [(ngModel)]="prefKey" name="prefKey" /></label>
+              <label><span class="label">Value</span><input [(ngModel)]="prefValue" name="prefValue" /></label>
+            </div>
+            <div class="row">
+              <button type="button" (click)="setPreference()" [disabled]="streaming">Set Preference</button>
+              <button type="button" (click)="loadSelfModel()" [disabled]="streaming">Load Self Model</button>
+            </div>
+            <pre>{{ selfSnapshot | json }}</pre>
+          </div>
+        </div>
+      </section>
     </main>
-  </div>
+  </section>
 </div>

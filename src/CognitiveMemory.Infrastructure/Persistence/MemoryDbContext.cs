@@ -1,112 +1,139 @@
-using CognitiveMemory.Domain.Entities;
+
 using Microsoft.EntityFrameworkCore;
+using CognitiveMemory.Infrastructure.Persistence.Entities;
 
 namespace CognitiveMemory.Infrastructure.Persistence;
 
 public class MemoryDbContext(DbContextOptions<MemoryDbContext> options) : DbContext(options)
 {
-    public DbSet<MemoryEntity> Entities => Set<MemoryEntity>();
-
-    public DbSet<Claim> Claims => Set<Claim>();
-
-    public DbSet<Evidence> Evidence => Set<Evidence>();
-
-    public DbSet<Contradiction> Contradictions => Set<Contradiction>();
-
-    public DbSet<SourceDocument> Documents => Set<SourceDocument>();
-
-    public DbSet<ToolExecution> ToolExecutions => Set<ToolExecution>();
-
-    public DbSet<OutboxEvent> OutboxEvents => Set<OutboxEvent>();
-
-    public DbSet<PolicyDecision> PolicyDecisions => Set<PolicyDecision>();
-
-    public DbSet<ClaimInsight> ClaimInsights => Set<ClaimInsight>();
-
-    public DbSet<ClaimCalibration> ClaimCalibrations => Set<ClaimCalibration>();
+    public DbSet<EpisodicMemoryEventEntity> EpisodicMemoryEvents => Set<EpisodicMemoryEventEntity>();
+    public DbSet<SemanticClaimEntity> SemanticClaims => Set<SemanticClaimEntity>();
+    public DbSet<ClaimEvidenceEntity> ClaimEvidence => Set<ClaimEvidenceEntity>();
+    public DbSet<ClaimContradictionEntity> ClaimContradictions => Set<ClaimContradictionEntity>();
+    public DbSet<ConsolidationPromotionEntity> ConsolidationPromotions => Set<ConsolidationPromotionEntity>();
+    public DbSet<ToolInvocationAuditEntity> ToolInvocationAudits => Set<ToolInvocationAuditEntity>();
+    public DbSet<ProceduralRoutineEntity> ProceduralRoutines => Set<ProceduralRoutineEntity>();
+    public DbSet<SelfPreferenceEntity> SelfPreferences => Set<SelfPreferenceEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.Entity<MemoryEntity>()
-            .Property(e => e.Aliases)
-            .HasColumnType("jsonb");
-        modelBuilder.Entity<MemoryEntity>()
-            .HasIndex(e => new { e.Type, e.Name })
-            .IsUnique();
-
-        modelBuilder.Entity<Claim>()
-            .Property(c => c.Status)
-            .HasConversion<string>();
-        modelBuilder.Entity<Claim>()
-            .HasIndex(c => c.Hash)
-            .IsUnique();
-
-        modelBuilder.Entity<Claim>()
-            .ToTable(tableBuilder =>
-                tableBuilder.HasCheckConstraint("ck_claim_object_or_literal", "(\"ObjectEntityId\" IS NULL) <> (\"LiteralValue\" IS NULL)"));
-
-        modelBuilder.Entity<Evidence>()
-            .HasOne(e => e.Claim)
-            .WithMany(c => c.Evidence)
-            .HasForeignKey(e => e.ClaimId)
-            .OnDelete(DeleteBehavior.Cascade);
-
-        modelBuilder.Entity<SourceDocument>()
-            .HasIndex(d => new { d.SourceType, d.SourceRef, d.ContentHash })
-            .IsUnique();
-
-        modelBuilder.Entity<Contradiction>()
-            .HasIndex(c => new { c.ClaimAId, c.ClaimBId })
-            .IsUnique();
-
-        modelBuilder.Entity<ToolExecution>()
-            .HasIndex(x => new { x.ToolName, x.IdempotencyKey })
-            .IsUnique();
-
-        modelBuilder.Entity<OutboxEvent>()
-            .HasIndex(x => new { x.EventType, x.IdempotencyKey })
-            .IsUnique();
-        modelBuilder.Entity<OutboxEvent>()
-            .HasIndex(x => new { x.Status, x.AvailableAt });
-
-        modelBuilder.Entity<PolicyDecision>()
-            .HasIndex(x => new { x.SourceType, x.SourceRef, x.CreatedAt });
-
-        modelBuilder.Entity<ClaimInsight>()
-            .HasIndex(x => x.UpdatedAt);
-
-        modelBuilder.Entity<ClaimCalibration>()
-            .HasIndex(x => new { x.ClaimId, x.CreatedAt });
-    }
-
-    public override int SaveChanges()
-    {
-        EnforceContradictionMutability();
-        return base.SaveChanges();
-    }
-
-    public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
-    {
-        EnforceContradictionMutability();
-        return base.SaveChangesAsync(cancellationToken);
-    }
-
-    private void EnforceContradictionMutability()
-    {
-        var modifiedContradictions = ChangeTracker.Entries<Contradiction>()
-            .Where(e => e.State == EntityState.Modified);
-
-        foreach (var entry in modifiedContradictions)
+        modelBuilder.Entity<EpisodicMemoryEventEntity>(entity =>
         {
-            foreach (var property in entry.Properties.Where(p => p.IsModified))
-            {
-                if (property.Metadata.Name is nameof(Contradiction.Status) or nameof(Contradiction.ResolutionNotes))
-                {
-                    continue;
-                }
+            entity.ToTable("EpisodicMemoryEvents");
+            entity.HasKey(x => x.EventId);
 
-                throw new InvalidOperationException("Contradiction rows are immutable except for Status and ResolutionNotes.");
-            }
-        }
+            entity.Property(x => x.SessionId).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.Who).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.What).IsRequired();
+            entity.Property(x => x.Context).IsRequired();
+            entity.Property(x => x.SourceReference).HasMaxLength(256).IsRequired();
+            entity.Property(x => x.OccurredAt).IsRequired();
+
+            entity.HasIndex(x => new { x.SessionId, x.OccurredAt });
+        });
+
+        modelBuilder.Entity<SemanticClaimEntity>(entity =>
+        {
+            entity.ToTable("SemanticClaims");
+            entity.HasKey(x => x.ClaimId);
+
+            entity.Property(x => x.Subject).HasMaxLength(256).IsRequired();
+            entity.Property(x => x.Predicate).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.Value).IsRequired();
+            entity.Property(x => x.Confidence).IsRequired();
+            entity.Property(x => x.Scope).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(32).IsRequired();
+            entity.Property(x => x.SupersededByClaimId);
+            entity.Property(x => x.CreatedAtUtc).IsRequired();
+            entity.Property(x => x.UpdatedAtUtc).IsRequired();
+
+            entity.HasIndex(x => new { x.Subject, x.Predicate, x.Status });
+            entity.HasIndex(x => x.SupersededByClaimId);
+        });
+
+        modelBuilder.Entity<ClaimEvidenceEntity>(entity =>
+        {
+            entity.ToTable("ClaimEvidence");
+            entity.HasKey(x => x.EvidenceId);
+
+            entity.Property(x => x.SourceType).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.SourceReference).HasMaxLength(256).IsRequired();
+            entity.Property(x => x.ExcerptOrSummary).IsRequired();
+            entity.Property(x => x.Strength).IsRequired();
+            entity.Property(x => x.CapturedAtUtc).IsRequired();
+
+            entity.HasIndex(x => new { x.ClaimId, x.CapturedAtUtc });
+            entity.HasOne<SemanticClaimEntity>()
+                .WithMany()
+                .HasForeignKey(x => x.ClaimId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ClaimContradictionEntity>(entity =>
+        {
+            entity.ToTable("ClaimContradictions");
+            entity.HasKey(x => x.ContradictionId);
+
+            entity.Property(x => x.Type).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.Severity).HasMaxLength(32).IsRequired();
+            entity.Property(x => x.Status).HasMaxLength(32).IsRequired();
+            entity.Property(x => x.DetectedAtUtc).IsRequired();
+
+            entity.HasIndex(x => new { x.ClaimAId, x.ClaimBId }).IsUnique();
+        });
+
+        modelBuilder.Entity<ConsolidationPromotionEntity>(entity =>
+        {
+            entity.ToTable("ConsolidationPromotions");
+            entity.HasKey(x => x.PromotionId);
+
+            entity.Property(x => x.Outcome).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.Notes);
+            entity.Property(x => x.ProcessedAtUtc).IsRequired();
+
+            entity.HasIndex(x => x.EpisodicEventId).IsUnique();
+            entity.HasIndex(x => x.ProcessedAtUtc);
+        });
+
+        modelBuilder.Entity<ToolInvocationAuditEntity>(entity =>
+        {
+            entity.ToTable("ToolInvocationAudits");
+            entity.HasKey(x => x.AuditId);
+
+            entity.Property(x => x.ToolName).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.ArgumentsJson).IsRequired();
+            entity.Property(x => x.ResultJson).IsRequired();
+            entity.Property(x => x.Succeeded).IsRequired();
+            entity.Property(x => x.Error);
+            entity.Property(x => x.ExecutedAtUtc).IsRequired();
+
+            entity.HasIndex(x => new { x.ToolName, x.ExecutedAtUtc });
+        });
+
+        modelBuilder.Entity<ProceduralRoutineEntity>(entity =>
+        {
+            entity.ToTable("ProceduralRoutines");
+            entity.HasKey(x => x.RoutineId);
+
+            entity.Property(x => x.Trigger).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.Name).HasMaxLength(256).IsRequired();
+            entity.Property(x => x.StepsJson).IsRequired();
+            entity.Property(x => x.CheckpointsJson).IsRequired();
+            entity.Property(x => x.Outcome).IsRequired();
+            entity.Property(x => x.CreatedAtUtc).IsRequired();
+            entity.Property(x => x.UpdatedAtUtc).IsRequired();
+
+            entity.HasIndex(x => x.Trigger);
+        });
+
+        modelBuilder.Entity<SelfPreferenceEntity>(entity =>
+        {
+            entity.ToTable("SelfPreferences");
+            entity.HasKey(x => x.Key);
+
+            entity.Property(x => x.Key).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.Value).IsRequired();
+            entity.Property(x => x.UpdatedAtUtc).IsRequired();
+        });
     }
 }
