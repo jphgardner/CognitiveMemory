@@ -1,0 +1,73 @@
+<section class="page space-y-4">
+  <div class="kpi-grid">
+    <article class="kpi-card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <p class="label">Responses / Min</p>
+      <h3>{{ responseThroughputPerMinuteValue }}</h3>
+      <span>Assistant turn throughput</span>
+    </article>
+    <article class="kpi-card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <p class="label">Tool Calls</p>
+      <h3>{{ totalToolCallsCount }}</h3>
+      <span>Audited tool invocations</span>
+    </article>
+    <article class="kpi-card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <p class="label">Successes</p>
+      <h3>{{ successfulToolCallsCount }}</h3>
+      <span>Successful tool executions</span>
+    </article>
+    <article class="kpi-card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <p class="label">Failures</p>
+      <h3>{{ totalToolCallsCount - successfulToolCallsCount }}</h3>
+      <span>Execution failures tracked</span>
+    </article>
+  </div>
+
+  <div class="chart-grid">
+    <article class="panel chart-panel rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div class="panel-head">
+        <h3>Tool Outcome Composition</h3>
+        <span>success vs fail</span>
+      </div>
+      <div class="bars" *ngIf="toolOutcomeMetricsValue.length > 0; else noOutcomes">
+        <div class="bar-row" *ngFor="let row of toolOutcomeMetricsValue">
+          <div class="bar-label">
+            <strong>{{ row.label }}</strong>
+            <span>{{ row.count }} events</span>
+          </div>
+          <div class="bar-track">
+            <div class="bar-fill" [style.width.%]="row.percent"></div>
+          </div>
+          <span class="bar-value">{{ row.percent }}%</span>
+        </div>
+      </div>
+      <ng-template #noOutcomes>
+        <p class="placeholder">Outcome analytics will populate after tool executions.</p>
+      </ng-template>
+    </article>
+
+    <article class="panel chart-panel rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div class="panel-head">
+        <h3>Assistant Output Trend</h3>
+        <span>live stream analysis</span>
+      </div>
+      <svg viewBox="0 0 430 130" class="trend-chart" *ngIf="activityPolylinePointsValue; else noTrendAnalytics">
+        <defs>
+          <linearGradient id="analyticsFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#f28a3f" stop-opacity="0.42" />
+            <stop offset="100%" stop-color="#f28a3f" stop-opacity="0.03" />
+          </linearGradient>
+        </defs>
+        <polyline [attr.points]="activityAreaPointsValue" fill="url(#analyticsFill)" stroke="none"></polyline>
+        <polyline [attr.points]="activityPolylinePointsValue" fill="none" stroke="#f28a3f" stroke-width="3" stroke-linecap="round"></polyline>
+      </svg>
+      <ng-template #noTrendAnalytics>
+        <p class="placeholder">No assistant trend data yet.</p>
+      </ng-template>
+    </article>
+  </div>
+
+  <article class="panel insight-panel rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <h3>Latest Assistant Output</h3>
+    <p>{{ latestAssistantPreviewValue }}</p>
+  </article>
+</section>

@@ -1,4 +1,6 @@
-using CognitiveMemory.Application.SelfModel;
+using CognitiveMemory.Application.Abstractions;
+using CognitiveMemory.Api.Security;
+using CognitiveMemory.Infrastructure.Persistence;
 
 namespace CognitiveMemory.Api.Endpoints;
 
@@ -6,21 +8,35 @@ public static class SelfModelEndpoints
 {
     public static IEndpointRouteBuilder MapSelfModelEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        endpoints.MapGet(
-                "/api/self-model/preferences",
-                async (ISelfModelService service, CancellationToken cancellationToken) =>
+        var group = endpoints.MapGroup("/api/self-model").WithTags("SelfModel").RequireAuthorization();
+
+        group.MapGet(
+                "/preferences",
+                async (HttpContext httpContext, Guid companionId, ISelfModelRepository repository, MemoryDbContext dbContext, CompanionOwnershipService ownershipService, CancellationToken cancellationToken) =>
                 {
-                    var snapshot = await service.GetAsync(cancellationToken);
+                    var companion = await ownershipService.ResolveOwnedCompanionAsync(httpContext.User, companionId, dbContext, cancellationToken);
+                    if (companion is null)
+                    {
+                        return Results.NotFound();
+                    }
+
+                    var snapshot = await repository.GetAsync(companion.CompanionId, cancellationToken);
                     return Results.Ok(snapshot);
                 })
             .WithName("GetSelfModelPreferences")
             .WithTags("SelfModel");
 
-        endpoints.MapPost(
-                "/api/self-model/preferences",
-                async (SetPreferenceDto request, ISelfModelService service, CancellationToken cancellationToken) =>
+        group.MapPost(
+                "/preferences",
+                async (HttpContext httpContext, SetPreferenceDto request, ISelfModelRepository repository, MemoryDbContext dbContext, CompanionOwnershipService ownershipService, CancellationToken cancellationToken) =>
                 {
-                    await service.SetPreferenceAsync(request.Key, request.Value, cancellationToken);
+                    var companion = await ownershipService.ResolveOwnedCompanionAsync(httpContext.User, request.CompanionId, dbContext, cancellationToken);
+                    if (companion is null)
+                    {
+                        return Results.NotFound();
+                    }
+
+                    await repository.SetPreferenceAsync(companion.CompanionId, request.Key, request.Value, cancellationToken);
                     return Results.NoContent();
                 })
             .WithName("SetSelfModelPreference")
@@ -30,4 +46,4 @@ public static class SelfModelEndpoints
     }
 }
 
-public sealed record SetPreferenceDto(string Key, string Value);
+public sealed record SetPreferenceDto(Guid CompanionId, string Key, string Value);

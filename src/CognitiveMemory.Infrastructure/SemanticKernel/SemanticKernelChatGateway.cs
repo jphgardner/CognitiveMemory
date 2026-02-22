@@ -67,7 +67,6 @@ public sealed class SemanticKernelChatGateway(
 
         var settings = GetExecutionSettings();
         var configuredTimeout = GetConfiguredTimeout();
-        var deadline = DateTimeOffset.UtcNow + configuredTimeout;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(configuredTimeout);
 
@@ -90,7 +89,7 @@ public sealed class SemanticKernelChatGateway(
             {
                 // Streaming can time out before first token on slower models; fall back to a normal completion.
                 attemptedFallback = true;
-                fallback = await TryFallbackCompletionAsync(prompt, settings, GetRemainingBudget(deadline), cancellationToken);
+                fallback = await TryFallbackCompletionAsync(prompt, settings, configuredTimeout, cancellationToken);
                 break;
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested && !streamedAny)
@@ -98,7 +97,7 @@ public sealed class SemanticKernelChatGateway(
                 // Some providers fail streaming but still support standard completion.
                 logger.LogWarning(ex, "Streaming invocation failed before first token. Falling back to one-shot completion.");
                 attemptedFallback = true;
-                fallback = await TryFallbackCompletionAsync(prompt, settings, GetRemainingBudget(deadline), cancellationToken);
+                fallback = await TryFallbackCompletionAsync(prompt, settings, configuredTimeout, cancellationToken);
                 break;
             }
 
@@ -130,12 +129,6 @@ public sealed class SemanticKernelChatGateway(
 
     private TimeSpan GetConfiguredTimeout() => TimeSpan.FromSeconds(Math.Max(5, options.ChatResponseTimeoutSeconds));
 
-    private static TimeSpan GetRemainingBudget(DateTimeOffset deadline)
-    {
-        var remaining = deadline - DateTimeOffset.UtcNow;
-        return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
-    }
-
     private async Task<string> InvokePromptWithTimeoutAsync(
         string prompt,
         PromptExecutionSettings? settings,
@@ -160,10 +153,10 @@ public sealed class SemanticKernelChatGateway(
     private async Task<string?> TryFallbackCompletionAsync(
         string prompt,
         PromptExecutionSettings? settings,
-        TimeSpan remainingBudget,
+        TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-        if (remainingBudget < TimeSpan.FromSeconds(2))
+        if (timeout < TimeSpan.FromSeconds(2))
         {
             logger.LogWarning("Skipping fallback completion because timeout budget is exhausted.");
             return null;
@@ -171,12 +164,30 @@ public sealed class SemanticKernelChatGateway(
 
         try
         {
-            return await InvokePromptWithTimeoutAsync(prompt, settings, remainingBudget, cancellationToken);
+            return await InvokePromptWithTimeoutAsync(prompt, settings, timeout, cancellationToken);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             logger.LogWarning("Fallback completion timed out with no output.");
             return null;
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested && settings is not null)
+        {
+            logger.LogWarning(ex, "Fallback completion with execution settings failed. Retrying without tool settings.");
+            try
+            {
+                return await InvokePromptWithTimeoutAsync(prompt, settings: null, timeout, cancellationToken);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning("Fallback completion without tool settings timed out with no output.");
+                return null;
+            }
+            catch (Exception retryEx) when (!cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning(retryEx, "Fallback completion without tool settings failed.");
+                return null;
+            }
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {

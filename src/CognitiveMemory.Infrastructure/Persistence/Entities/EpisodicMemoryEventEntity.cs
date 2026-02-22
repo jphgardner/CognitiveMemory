@@ -3,6 +3,7 @@ namespace CognitiveMemory.Infrastructure.Persistence.Entities;
 public sealed class EpisodicMemoryEventEntity
 {
     public Guid EventId { get; set; }
+    public Guid CompanionId { get; set; }
     public string SessionId { get; set; } = string.Empty;
     public string Who { get; set; } = string.Empty;
     public string What { get; set; } = string.Empty;

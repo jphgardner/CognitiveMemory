@@ -1,0 +1,204 @@
+<section class="page chat-layout gap-4">
+  <article class="panel chat-panel rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div class="panel-head">
+      <h3>Chat Stream</h3>
+      <button mat-stroked-button type="button" (click)="host.clearChat()" [disabled]="host.streaming || host.turns.length === 0">Clear Log</button>
+    </div>
+
+    <div class="chat-log rounded-xl bg-slate-50 p-2">
+      <article
+        *ngFor="let turn of host.turns; let i = index"
+        class="turn rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
+        [class.user]="turn.role === 'user'"
+        [class.assistant]="turn.role === 'assistant'"
+        [class.selected]="turn.role === 'assistant' && host.isSelectedAssistantTurn(i)"
+        (click)="host.selectAssistantTurn(i)">
+        <div class="turn-role">{{ turn.role }}</div>
+        <div class="turn-top" *ngIf="turn.role === 'assistant'">
+          <button mat-stroked-button type="button" class="thinking-toggle" (click)="host.toggleThinkingForTurn(i)">
+            {{ host.isThinkingExpanded(i) ? 'Hide Thinking Stages' : 'Show Thinking Stages' }}
+          </button>
+        </div>
+
+        <div class="thinking-box inline" *ngIf="turn.role === 'assistant' && host.isThinkingExpanded(i)">
+          <ol *ngIf="host.assistantThinkingStages(turn).length > 0; else noStages">
+            <li *ngFor="let stage of host.assistantThinkingStages(turn)" [innerHTML]="host.thinkingStageHtml(stage)"></li>
+          </ol>
+          <ng-template #noStages>
+            <p>No thinking stages available for this response.</p>
+          </ng-template>
+        </div>
+
+        <div class="turn-text markdown-body" [innerHTML]="host.assistantDisplayHtml(turn)"></div>
+
+        <div class="evidence" *ngIf="turn.role === 'assistant'">
+          <div class="evidence-head">
+            <span class="label">Memory Evidence</span>
+            <span class="label">Tools: {{ host.assistantToolCalls(turn).length }}</span>
+          </div>
+
+          <div class="evidence-layers">
+            <span *ngIf="host.assistantMemoryLayers(turn).length === 0" class="layer-chip muted">none detected</span>
+            <span *ngFor="let layer of host.assistantMemoryLayers(turn)" class="layer-chip">{{ layer }}</span>
+          </div>
+
+          <details class="tool-call-list" *ngIf="host.assistantToolCalls(turn).length > 0">
+            <summary>Show tool calls</summary>
+            <div class="tool-call" *ngFor="let call of host.assistantToolCalls(turn)">
+              <div class="tool-line">
+                <strong>{{ call.toolName }}</strong>
+                <span>{{ call.succeeded ? 'ok' : 'failed' }}</span>
+                <span>{{ call.executedAtUtc | date: 'HH:mm:ss.SSS' }}</span>
+              </div>
+              <div class="tool-error" *ngIf="!call.succeeded && call.error">
+                {{ call.error }}
+              </div>
+            </div>
+          </details>
+        </div>
+      </article>
+
+      <div *ngIf="host.turns.length === 0" class="empty">No messages yet. Start streaming below.</div>
+    </div>
+
+    <form class="composer rounded-xl border border-slate-200 bg-slate-50 p-3" (ngSubmit)="host.sendStream()">
+      <textarea
+        class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+        [(ngModel)]="host.messageInput"
+        name="message"
+        rows="5"
+        placeholder="Ask anything..."
+        [disabled]="host.streaming"></textarea>
+
+      <div class="composer-row">
+        <p>Latest assistant preview: {{ host.latestAssistantPreview() }}</p>
+        <button mat-raised-button color="primary" type="submit" [disabled]="host.streaming || !host.messageInput.trim()">
+          {{ host.streaming ? 'Streaming...' : 'Send Stream' }}
+        </button>
+      </div>
+    </form>
+  </article>
+
+  <aside class="panel event-sidebar rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div class="panel-head">
+      <h3>Live Event Feed</h3>
+      <span>{{ host.selectedEventRows().length }} events</span>
+    </div>
+
+    <p class="event-caption" *ngIf="host.selectedAssistantTurn(); else noSelection">
+      Showing events for selected assistant reply window.
+    </p>
+    <ng-template #noSelection>
+      <p class="event-caption">No assistant reply selected yet.</p>
+    </ng-template>
+
+    <div class="event-list" *ngIf="host.selectedEventRows().length > 0; else noEvents">
+      <article *ngFor="let row of host.selectedEventRows()" class="event-card" [ngClass]="host.eventStatusClass(row)">
+        <div class="event-top">
+          <strong>{{ row.eventType }}</strong>
+          <span>{{ row.occurredAtUtc | date: 'HH:mm:ss.SSS' }}</span>
+        </div>
+        <div class="event-meta">
+          <span>{{ row.aggregateType }}</span>
+          <span>{{ host.eventResultSummary(row) }}</span>
+        </div>
+        <p class="event-preview">{{ row.payloadPreview }}</p>
+        <p class="event-error" *ngIf="row.lastError">{{ row.lastError }}</p>
+      </article>
+    </div>
+
+    <ng-template #noEvents>
+      <p class="empty">No event rows yet for this assistant reply window.</p>
+    </ng-template>
+
+    <div class="panel-head subconscious-head">
+      <h3>Subconscious Debates</h3>
+      <span>{{ host.subconsciousDebates.length }} sessions</span>
+    </div>
+
+    <div class="event-list" *ngIf="host.subconsciousDebates.length > 0; else noSubconscious">
+      <article *ngFor="let debate of host.subconsciousDebates" class="event-card" [ngClass]="host.debateCardClass(debate)">
+        <div class="event-top">
+          <strong>{{ debate.topicKey }}</strong>
+          <span>{{ debate.updatedAtUtc | date: 'HH:mm:ss.SSS' }}</span>
+        </div>
+        <div class="event-meta">
+          <span>{{ debate.triggerEventType }}</span>
+          <span>{{ host.debateResolutionLabel(debate) }}</span>
+        </div>
+        <p class="event-error" *ngIf="debate.lastError">{{ debate.lastError }}</p>
+      </article>
+    </div>
+    <ng-template #noSubconscious>
+      <p class="empty">No subconscious debate sessions yet.</p>
+    </ng-template>
+
+    <div class="panel-head subconscious-head">
+      <h3>Subconscious Lifecycle</h3>
+      <span>{{ host.subconsciousLifecycle.length }} events</span>
+    </div>
+    <div class="event-list" *ngIf="host.subconsciousLifecycle.length > 0; else noSubconsciousLifecycle">
+      <article *ngFor="let lifecycle of host.subconsciousLifecycle" class="event-card"
+        [class.event-ok]="host.isSubconsciousLifecycleOk(lifecycle)"
+        [class.event-fail]="host.isSubconsciousLifecycleFail(lifecycle)"
+        [class.event-pending]="!host.isSubconsciousLifecycleOk(lifecycle) && !host.isSubconsciousLifecycleFail(lifecycle)">
+        <div class="event-top">
+          <strong>{{ lifecycle.eventType }}</strong>
+          <span>{{ lifecycle.occurredAtUtc | date: 'HH:mm:ss.SSS' }}</span>
+        </div>
+        <div class="event-meta">
+          <span>{{ lifecycle.status }}</span>
+          <span>{{ lifecycle.publishedAtUtc ? 'published' : 'pending' }}</span>
+        </div>
+        <p class="event-preview">{{ lifecycle.payloadPreview }}</p>
+        <p class="event-error" *ngIf="lifecycle.lastError">{{ lifecycle.lastError }}</p>
+      </article>
+    </div>
+    <ng-template #noSubconsciousLifecycle>
+      <p class="empty">No subconscious lifecycle events yet.</p>
+    </ng-template>
+
+    <div class="panel-head subconscious-head">
+      <h3>Scheduled Actions (Upcoming)</h3>
+      <span>{{ host.scheduledUpcomingRows().length }} actions</span>
+    </div>
+    <div class="event-list" *ngIf="host.scheduledUpcomingRows().length > 0; else noScheduledUpcoming">
+      <article *ngFor="let action of host.scheduledUpcomingRows()" class="event-card" [ngClass]="host.scheduledStatusClass(action)">
+        <div class="event-top">
+          <strong>{{ action.actionType }}</strong>
+          <span>{{ action.runAtUtc | date: 'HH:mm:ss.SSS' }}</span>
+        </div>
+        <div class="event-meta">
+          <span>run @ {{ action.runAtUtc | date: 'yyyy-MM-dd HH:mm:ss' }}</span>
+          <span>{{ host.scheduledResultSummary(action) }}</span>
+        </div>
+        <p class="event-preview">{{ host.scheduledInputPreview(action) }}</p>
+      </article>
+    </div>
+    <ng-template #noScheduledUpcoming>
+      <p class="empty">No upcoming scheduled actions for this session.</p>
+    </ng-template>
+
+    <div class="panel-head subconscious-head">
+      <h3>Scheduled Action Results</h3>
+      <span>{{ host.scheduledRecentResultRows().length }} actions</span>
+    </div>
+    <div class="event-list" *ngIf="host.scheduledRecentResultRows().length > 0; else noScheduledResults">
+      <article *ngFor="let action of host.scheduledRecentResultRows()" class="event-card" [ngClass]="host.scheduledStatusClass(action)">
+        <div class="event-top">
+          <strong>{{ action.actionType }}</strong>
+          <span>{{ (action.completedAtUtc || action.updatedAtUtc || action.runAtUtc) | date: 'HH:mm:ss.SSS' }}</span>
+        </div>
+        <div class="event-meta">
+          <span>{{ action.status }}</span>
+          <span>{{ host.scheduledResultSummary(action) }}</span>
+        </div>
+        <p class="event-preview">{{ host.scheduledInputPreview(action) }}</p>
+        <p class="event-error" *ngIf="action.lastError">{{ action.lastError }}</p>
+      </article>
+    </div>
+    <ng-template #noScheduledResults>
+      <p class="empty">No completed/failed scheduled actions yet.</p>
+    </ng-template>
+  </aside>
+</section>

@@ -1,4 +1,6 @@
 using CognitiveMemory.Application.Semantic;
+using CognitiveMemory.Api.Security;
+using CognitiveMemory.Infrastructure.Persistence;
 using CognitiveMemory.Domain.Memory;
 
 namespace CognitiveMemory.Api.Endpoints;
@@ -7,13 +9,21 @@ public static class SemanticMemoryEndpoints
 {
     public static IEndpointRouteBuilder MapSemanticMemoryEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        endpoints.MapPost(
-                "/api/semantic/claims",
-                async (CreateSemanticClaimDto request, ISemanticMemoryService service, CancellationToken cancellationToken) =>
+        var group = endpoints.MapGroup("/api/semantic").WithTags("Semantic").RequireAuthorization();
+
+        group.MapPost(
+                "/claims",
+                async (HttpContext httpContext, CreateSemanticClaimDto request, ISemanticMemoryService service, MemoryDbContext dbContext, CompanionOwnershipService ownershipService, CancellationToken cancellationToken) =>
                 {
+                    var companion = await ownershipService.ResolveOwnedCompanionAsync(httpContext.User, request.CompanionId, dbContext, cancellationToken);
+                    if (companion is null)
+                    {
+                        return Results.NotFound();
+                    }
+
                     var created = await service.CreateClaimAsync(
                         new CreateSemanticClaimRequest(
-                            request.Subject,
+                            string.IsNullOrWhiteSpace(request.Subject) ? $"session:{companion.SessionId}" : request.Subject,
                             request.Predicate,
                             request.Value,
                             request.Confidence,
@@ -28,24 +38,41 @@ public static class SemanticMemoryEndpoints
             .WithName("CreateSemanticClaim")
             .WithTags("Semantic");
 
-        endpoints.MapGet(
-                "/api/semantic/claims",
+        group.MapGet(
+                "/claims",
                 async (
+                    HttpContext httpContext,
+                    Guid companionId,
                     string? subject,
                     string? predicate,
                     SemanticClaimStatus? status,
                     int? take,
                     ISemanticMemoryService service,
+                    MemoryDbContext dbContext,
+                    CompanionOwnershipService ownershipService,
                     CancellationToken cancellationToken) =>
                 {
-                    var claims = await service.QueryClaimsAsync(subject, predicate, status, take ?? 100, cancellationToken);
+                    var companion = await ownershipService.ResolveOwnedCompanionAsync(httpContext.User, companionId, dbContext, cancellationToken);
+                    if (companion is null)
+                    {
+                        return Results.NotFound();
+                    }
+
+                    var scopedSubject = $"session:{companion.SessionId}";
+                    if (!string.IsNullOrWhiteSpace(subject)
+                        && !subject.Contains(companion.SessionId, StringComparison.Ordinal))
+                    {
+                        return Results.BadRequest(new { error = "subject is outside companion scope." });
+                    }
+
+                    var claims = await service.QueryClaimsAsync(subject ?? scopedSubject, predicate, status, take ?? 100, cancellationToken);
                     return Results.Ok(claims.Select(ToClaimDto));
                 })
             .WithName("QuerySemanticClaims")
             .WithTags("Semantic");
 
-        endpoints.MapPost(
-                "/api/semantic/claims/{claimId:guid}/evidence",
+        group.MapPost(
+                "/claims/{claimId:guid}/evidence",
                 async (Guid claimId, AddClaimEvidenceDto request, ISemanticMemoryService service, CancellationToken cancellationToken) =>
                 {
                     var evidence = await service.AddEvidenceAsync(
@@ -63,8 +90,8 @@ public static class SemanticMemoryEndpoints
             .WithName("AddClaimEvidence")
             .WithTags("Semantic");
 
-        endpoints.MapPost(
-                "/api/semantic/contradictions",
+        group.MapPost(
+                "/contradictions",
                 async (AddClaimContradictionDto request, ISemanticMemoryService service, CancellationToken cancellationToken) =>
                 {
                     var contradiction = await service.AddContradictionAsync(
@@ -82,8 +109,8 @@ public static class SemanticMemoryEndpoints
             .WithName("AddClaimContradiction")
             .WithTags("Semantic");
 
-        endpoints.MapPost(
-                "/api/semantic/claims/{claimId:guid}/supersede",
+        group.MapPost(
+                "/claims/{claimId:guid}/supersede",
                 async (Guid claimId, SupersedeClaimDto request, ISemanticMemoryService service, CancellationToken cancellationToken) =>
                 {
                     var created = await service.SupersedeClaimAsync(
@@ -101,8 +128,8 @@ public static class SemanticMemoryEndpoints
             .WithName("SupersedeSemanticClaim")
             .WithTags("Semantic");
 
-        endpoints.MapPost(
-                "/api/semantic/decay/run-once",
+        group.MapPost(
+                "/decay/run-once",
                 async (DecayClaimsDto request, ISemanticMemoryService service, CancellationToken cancellationToken) =>
                 {
                     var affected = await service.RunDecayAsync(
@@ -155,6 +182,7 @@ public static class SemanticMemoryEndpoints
 }
 
 public sealed record CreateSemanticClaimDto(
+    Guid CompanionId,
     string Subject,
     string Predicate,
     string Value,

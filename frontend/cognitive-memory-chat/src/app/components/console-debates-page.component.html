@@ -1,0 +1,167 @@
+<section class="page debates-layout gap-4">
+  <article class="panel debates-list-panel rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div class="panel-head">
+      <h3>Session Debates</h3>
+      <div class="row">
+        <button mat-stroked-button type="button" (click)="host.refreshDebatesPage(false)" [disabled]="host.debatesLoading || host.debatesActionBusy">Refresh</button>
+        <span>{{ host.subconsciousDebates.length }} debates</span>
+      </div>
+    </div>
+
+    <div class="debate-run-form">
+      <label><span class="label">Topic</span><input [(ngModel)]="host.debateRunTopicKey" name="debateRunTopicKey" /></label>
+      <label><span class="label">Trigger Type</span><input [(ngModel)]="host.debateRunTriggerEventType" name="debateRunTriggerEventType" /></label>
+      <label><span class="label">Trigger Payload JSON</span><textarea [(ngModel)]="host.debateRunTriggerPayloadJson" name="debateRunTriggerPayloadJson" rows="3"></textarea></label>
+      <button mat-raised-button color="primary" type="button" (click)="host.runManualDebate()" [disabled]="host.debatesActionBusy">Run Manual Debate</button>
+    </div>
+
+    <div class="debate-list" *ngIf="host.subconsciousDebates.length > 0; else noDebates">
+      <article
+        *ngFor="let debate of host.subconsciousDebates"
+        class="debate-item"
+        [class.active]="host.selectedDebateId === debate.debateId"
+        role="button"
+        tabindex="0"
+        (click)="host.selectDebate(debate.debateId)"
+        (keydown.enter)="host.selectDebate(debate.debateId)">
+        <div class="debate-item-top">
+          <strong>{{ debate.topicKey }}</strong>
+          <span>{{ debate.updatedAtUtc | date: 'HH:mm:ss' }}</span>
+        </div>
+        <div class="debate-item-meta">
+          <span>{{ debate.triggerEventType }}</span>
+          <span>{{ host.debateResolutionLabel(debate) }}</span>
+        </div>
+        <div class="debate-item-actions row">
+          <button mat-button type="button" (click)="host.openDebateDialog(debate.debateId); $event.stopPropagation()">Open</button>
+          <button mat-button type="button" *ngIf="debate.state === 'AwaitingUser'" (click)="host.openDebateDecision(debate.debateId); $event.stopPropagation()">Open Decision</button>
+        </div>
+      </article>
+    </div>
+    <ng-template #noDebates>
+      <p class="empty">No debates for this session yet.</p>
+    </ng-template>
+  </article>
+
+  <article class="panel debates-detail-panel rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div class="panel-head">
+      <h3>Debate Detail</h3>
+      <span>{{ host.selectedDebateSummary() }}</span>
+    </div>
+
+    <div class="row">
+      <button mat-stroked-button type="button" (click)="host.openDebateDialog(host.selectedDebateId ?? '')" [disabled]="!host.selectedDebateId">Open Full Detail</button>
+      <button mat-raised-button color="primary" type="button" (click)="host.approveSelectedDebate()" [disabled]="!host.selectedDebateId || host.debatesActionBusy">Approve</button>
+      <button mat-stroked-button type="button" (click)="host.rejectSelectedDebate()" [disabled]="!host.selectedDebateId || host.debatesActionBusy">Conclude (Skip)</button>
+      <button mat-stroked-button type="button" (click)="host.rerunSelectedDebate()" [disabled]="!host.selectedDebateId || host.debatesActionBusy">Re-run</button>
+    </div>
+
+    <div *ngIf="host.selectedDebateDetail; else noSelectedDebate" class="debate-detail-body">
+      <div class="kpi-grid debate-kpi-grid">
+        <article class="kpi-card">
+          <p class="label">State</p>
+          <h3>{{ host.debateResolutionLabel(host.selectedDebateDetail, host.selectedDebateOutcome) }}</h3>
+          <span>{{ host.selectedDebateDetail.topicKey }}</span>
+        </article>
+        <article class="kpi-card">
+          <p class="label">Created</p>
+          <h3>{{ host.selectedDebateDetail.createdAtUtc | date: 'HH:mm:ss' }}</h3>
+          <span>{{ host.selectedDebateDetail.createdAtUtc | date: 'yyyy-MM-dd' }}</span>
+        </article>
+        <article class="kpi-card">
+          <p class="label">Turns</p>
+          <h3>{{ host.selectedDebateTurns.length }}</h3>
+          <span>Captured turn records</span>
+        </article>
+        <article class="kpi-card">
+          <p class="label">Events</p>
+          <h3>{{ host.selectedDebateEvents.length }}</h3>
+          <span>Lifecycle + outbox events</span>
+        </article>
+      </div>
+
+      <article class="panel nested-panel rounded-xl border border-slate-200 bg-slate-50 p-3 shadow-sm">
+        <div class="panel-head">
+          <h3>Turns</h3>
+          <span>{{ host.selectedDebateTurns.length }} rows</span>
+        </div>
+        <div class="event-list" *ngIf="host.selectedDebateTurns.length > 0; else noTurns">
+          <details *ngFor="let turn of host.selectedDebateTurns" class="event-card debate-turn-box">
+            <summary class="debate-turn-summary">
+              <div class="event-top">
+                <strong>#{{ turn.turnNumber }} · {{ turn.role }}</strong>
+                <span>{{ turn.createdAtUtc | date: 'HH:mm:ss.SSS' }}</span>
+              </div>
+              <div class="event-meta">
+                <span>{{ turn.agentName }}</span>
+                <span *ngIf="turn.confidence !== null && turn.confidence !== undefined">confidence {{ turn.confidence | number: '1.2-2' }}</span>
+              </div>
+              <p class="event-preview">{{ host.debateTurnPreview(turn) }}</p>
+            </summary>
+            <pre class="turn-message-pre">{{ turn.message }}</pre>
+          </details>
+        </div>
+        <ng-template #noTurns>
+          <p class="empty">No turns captured yet.</p>
+        </ng-template>
+      </article>
+
+      <article class="panel nested-panel rounded-xl border border-slate-200 bg-slate-50 p-3 shadow-sm">
+        <div class="panel-head">
+          <h3>Outcome</h3>
+          <span>{{ host.selectedDebateOutcome?.validationStatus ?? 'none' }} / {{ host.selectedDebateOutcome?.applyStatus ?? 'none' }}</span>
+        </div>
+        <pre>{{ host.debateOutcomePrettyJson() }}</pre>
+      </article>
+
+      <article class="panel nested-panel rounded-xl border border-slate-200 bg-slate-50 p-3 shadow-sm">
+        <div class="panel-head">
+          <h3>Approval Preview</h3>
+          <span>{{ host.selectedDebateReview?.validation?.status ?? 'none' }}</span>
+        </div>
+        <div class="debate-decision-box" *ngIf="host.selectedDebateDetail.state === 'AwaitingUser'">
+          <label>
+            <span class="label">Your Decision Notes / Input</span>
+            <textarea [(ngModel)]="host.decisionInputText" name="decisionInputText" rows="4" placeholder="Explain your decision or provide guidance for rerun..."></textarea>
+          </label>
+          <label class="decision-checkbox">
+            <input type="checkbox" [(ngModel)]="host.decisionQueueRerun" name="decisionQueueRerun" />
+            <span>Queue rerun with this input after decision</span>
+          </label>
+          <div class="row">
+            <button mat-raised-button color="primary" type="button" (click)="host.submitSelectedDebateDecision('approve')" [disabled]="!host.selectedDebateId || host.debatesActionBusy">Approve With Input</button>
+            <button mat-stroked-button type="button" (click)="host.submitSelectedDebateDecision('reject')" [disabled]="!host.selectedDebateId || host.debatesActionBusy">Conclude (Skip) With Input</button>
+          </div>
+        </div>
+        <pre>{{ host.debateReviewPrettyJson() }}</pre>
+      </article>
+
+      <article class="panel nested-panel rounded-xl border border-slate-200 bg-slate-50 p-3 shadow-sm">
+        <div class="panel-head">
+          <h3>Events</h3>
+          <span>{{ host.selectedDebateEvents.length }} rows</span>
+        </div>
+        <div class="event-list" *ngIf="host.selectedDebateEvents.length > 0; else noDebateEvents">
+          <article *ngFor="let row of host.selectedDebateEvents" class="event-card" [ngClass]="host.eventStatusClass(row)">
+            <div class="event-top">
+              <strong>{{ row.eventType }}</strong>
+              <span>{{ row.occurredAtUtc | date: 'HH:mm:ss.SSS' }}</span>
+            </div>
+            <div class="event-meta">
+              <span>{{ row.status }}</span>
+              <span>retries: {{ row.retryCount }}</span>
+            </div>
+            <p class="event-preview">{{ row.payloadPreview }}</p>
+            <p class="event-error" *ngIf="row.lastError">{{ row.lastError }}</p>
+          </article>
+        </div>
+        <ng-template #noDebateEvents>
+          <p class="empty">No events recorded yet.</p>
+        </ng-template>
+      </article>
+    </div>
+    <ng-template #noSelectedDebate>
+      <p class="empty">Select a debate to inspect full details.</p>
+    </ng-template>
+  </article>
+</section>

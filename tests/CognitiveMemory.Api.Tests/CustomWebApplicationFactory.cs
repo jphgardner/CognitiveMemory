@@ -8,12 +8,17 @@ using CognitiveMemory.Application.Semantic;
 using CognitiveMemory.Application.Truth;
 using CognitiveMemory.Domain.Memory;
 using CognitiveMemory.Infrastructure.Persistence;
+using CognitiveMemory.Infrastructure.Persistence.Entities;
+using CognitiveMemory.Infrastructure.Subconscious;
+using CognitiveMemory.Application.Abstractions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace CognitiveMemory.Api.Tests;
 
@@ -25,8 +30,7 @@ public sealed class CustomWebApplicationFactory : WebApplicationFactory<Program>
         builder.ConfigureServices(services =>
         {
             services.RemoveAll(typeof(IHostedService));
-            services.RemoveAll(typeof(DbContextOptions<MemoryDbContext>));
-            services.RemoveAll(typeof(MemoryDbContext));
+            RemoveMemoryDbRegistrations(services);
 
             services.AddDbContext<MemoryDbContext>(options => options.UseInMemoryDatabase("cognitive-memory-tests"));
 
@@ -38,6 +42,8 @@ public sealed class CustomWebApplicationFactory : WebApplicationFactory<Program>
             services.RemoveAll(typeof(IGoalPlanningService));
             services.RemoveAll(typeof(IIdentityEvolutionService));
             services.RemoveAll(typeof(ITruthMaintenanceService));
+            services.RemoveAll(typeof(ISubconsciousDebateService));
+            services.RemoveAll(typeof(IWorkingMemoryStore));
 
             services.AddSingleton<IChatService>(new StubChatService());
             services.AddSingleton<IEpisodicMemoryService>(new StubEpisodicService());
@@ -47,7 +53,78 @@ public sealed class CustomWebApplicationFactory : WebApplicationFactory<Program>
             services.AddSingleton<IGoalPlanningService>(new StubPlanningService());
             services.AddSingleton<IIdentityEvolutionService>(new StubIdentityService());
             services.AddSingleton<ITruthMaintenanceService>(new StubTruthService());
+            services.AddScoped<ISubconsciousDebateService, StubSubconsciousDebateService>();
+            services.AddSingleton<IWorkingMemoryStore>(new StubWorkingMemoryStore());
         });
+    }
+
+    private static void RemoveMemoryDbRegistrations(IServiceCollection services)
+    {
+        services.RemoveAll(typeof(DbContextOptions<MemoryDbContext>));
+        services.RemoveAll(typeof(MemoryDbContext));
+
+        var descriptors = services
+            .Where(
+                d =>
+                {
+                    var type = d.ServiceType;
+                    if (type == typeof(MemoryDbContext))
+                    {
+                        return true;
+                    }
+
+                    if (!type.IsGenericType)
+                    {
+                        return false;
+                    }
+
+                    var definition = type.GetGenericTypeDefinition();
+                    var args = type.GetGenericArguments();
+                    return args.Length == 1
+                           && args[0] == typeof(MemoryDbContext)
+                           && (definition == typeof(IDbContextFactory<>)
+                               || definition == typeof(DbContextOptions<>)
+                               || definition == typeof(IDbContextOptionsConfiguration<>)
+                               || definition == typeof(IConfigureOptions<>)
+                               || definition == typeof(IPostConfigureOptions<>));
+                })
+            .ToArray();
+
+        foreach (var descriptor in descriptors)
+        {
+            services.Remove(descriptor);
+        }
+
+        // Remove Aspire-specific option registrations that can enforce external connection-string validation in tests.
+        var aspireOptionDescriptors = services
+            .Where(
+                d =>
+                {
+                    var type = d.ImplementationType;
+                    if (type is null)
+                    {
+                        return false;
+                    }
+
+                    if (!type.FullName!.Contains("Aspire", StringComparison.Ordinal))
+                    {
+                        return false;
+                    }
+
+                    if (!d.ServiceType.IsGenericType)
+                    {
+                        return false;
+                    }
+
+                    var definition = d.ServiceType.GetGenericTypeDefinition();
+                    return definition == typeof(IConfigureOptions<>) || definition == typeof(IPostConfigureOptions<>);
+                })
+            .ToArray();
+
+        foreach (var descriptor in aspireOptionDescriptors)
+        {
+            services.Remove(descriptor);
+        }
     }
 
     private sealed class StubChatService : IChatService
@@ -132,5 +209,92 @@ public sealed class CustomWebApplicationFactory : WebApplicationFactory<Program>
     {
         public Task<TruthMaintenanceRunResult> RunOnceAsync(CancellationToken cancellationToken = default)
             => Task.FromResult(new TruthMaintenanceRunResult(12, 2, 1, 1, 1, ["clarify"], DateTimeOffset.UtcNow.AddSeconds(-1), DateTimeOffset.UtcNow));
+    }
+
+    private sealed class StubSubconsciousDebateService(IServiceScopeFactory scopeFactory) : ISubconsciousDebateService
+    {
+        public async Task QueueDebateAsync(string sessionId, SubconsciousDebateTopic topic, CancellationToken cancellationToken = default)
+        {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<MemoryDbContext>();
+            var companionId = await db.Companions
+                .Where(x => x.SessionId == sessionId)
+                .Select(x => (Guid?)x.CompanionId)
+                .FirstOrDefaultAsync(cancellationToken) ?? Guid.Empty;
+            var now = DateTimeOffset.UtcNow;
+            db.SubconsciousDebateSessions.Add(
+                new SubconsciousDebateSessionEntity
+                {
+                    DebateId = Guid.NewGuid(),
+                    CompanionId = companionId,
+                    SessionId = sessionId,
+                    TopicKey = topic.TopicKey,
+                    TriggerEventId = topic.TriggerEventId,
+                    TriggerEventType = topic.TriggerEventType,
+                    TriggerPayloadJson = topic.TriggerPayloadJson,
+                    State = "Queued",
+                    Priority = 50,
+                    CreatedAtUtc = now,
+                    UpdatedAtUtc = now
+                });
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        public Task ProcessDebateAsync(Guid debateId, CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public async Task<bool> ApproveDebateAsync(Guid debateId, CancellationToken cancellationToken = default)
+        {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<MemoryDbContext>();
+            var row = await db.SubconsciousDebateSessions.FirstOrDefaultAsync(x => x.DebateId == debateId, cancellationToken);
+            if (row is null)
+            {
+                return false;
+            }
+
+            row.State = "Completed";
+            row.CompletedAtUtc = DateTimeOffset.UtcNow;
+            row.UpdatedAtUtc = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+
+        public async Task<bool> RejectDebateAsync(Guid debateId, CancellationToken cancellationToken = default)
+        {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<MemoryDbContext>();
+            var row = await db.SubconsciousDebateSessions.FirstOrDefaultAsync(x => x.DebateId == debateId, cancellationToken);
+            if (row is null)
+            {
+                return false;
+            }
+
+            row.State = "Completed";
+            row.CompletedAtUtc = DateTimeOffset.UtcNow;
+            row.UpdatedAtUtc = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+    }
+
+    private sealed class StubWorkingMemoryStore : IWorkingMemoryStore
+    {
+        private readonly Dictionary<string, WorkingMemoryContext> contexts = new(StringComparer.Ordinal);
+
+        public Task<WorkingMemoryContext> GetAsync(string sessionId, CancellationToken cancellationToken = default)
+        {
+            if (contexts.TryGetValue(sessionId, out var existing))
+            {
+                return Task.FromResult(existing);
+            }
+
+            return Task.FromResult(new WorkingMemoryContext(sessionId, []));
+        }
+
+        public Task SaveAsync(WorkingMemoryContext context, CancellationToken cancellationToken = default)
+        {
+            contexts[context.SessionId] = context;
+            return Task.CompletedTask;
+        }
     }
 }

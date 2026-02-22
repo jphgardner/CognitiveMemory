@@ -24,4 +24,12 @@ public interface IEpisodicMemoryRepository
         DateTimeOffset toUtc,
         int take = 500,
         CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<EpisodicMemoryEvent>> QueryRangeAsync(
+        Guid companionId,
+        DateTimeOffset fromUtc,
+        DateTimeOffset toUtc,
+        int take = 500,
+        CancellationToken cancellationToken = default)
+        => QueryRangeAsync(fromUtc, toUtc, take, cancellationToken);
 }

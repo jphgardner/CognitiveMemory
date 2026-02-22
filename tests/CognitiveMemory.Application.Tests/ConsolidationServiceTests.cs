@@ -1,4 +1,5 @@
 using CognitiveMemory.Application.Abstractions;
+using CognitiveMemory.Application.Cognitive;
 using CognitiveMemory.Application.Consolidation;
 using CognitiveMemory.Domain.Memory;
 using Xunit;
@@ -29,8 +30,10 @@ public sealed class ConsolidationServiceTests
             MinExtractionConfidence = 0.5,
             MinOccurrencesForPromotion = 1
         };
+        var directory = new InMemoryCompanionDirectory([new CompanionScope(Guid.NewGuid(), "s1", "u1")]);
+        var profiles = new InMemoryCognitiveProfileResolver();
 
-        var service = new ConsolidationService(episodicRepo, semanticRepo, stateRepo, extractor, options);
+        var service = new ConsolidationService(episodicRepo, semanticRepo, stateRepo, extractor, directory, profiles, options);
         var result = await service.RunOnceAsync();
 
         Assert.Equal(1, result.Promoted);
@@ -55,6 +58,8 @@ public sealed class ConsolidationServiceTests
             new InMemorySemanticRepo(),
             new InMemoryStateRepo(),
             new StubExtractor(new ExtractedClaimCandidate("Alice", "lives in", "Paris", 0.3)),
+            new InMemoryCompanionDirectory([new CompanionScope(Guid.NewGuid(), "s1", "u1")]),
+            new InMemoryCognitiveProfileResolver(),
             new ConsolidationOptions
             {
                 MinExtractionConfidence = 0.8,
@@ -83,6 +88,9 @@ public sealed class ConsolidationServiceTests
             => Task.FromResult(events);
 
         public Task<IReadOnlyList<EpisodicMemoryEvent>> QueryRangeAsync(DateTimeOffset fromUtc, DateTimeOffset toUtc, int take = 500, CancellationToken cancellationToken = default)
+            => Task.FromResult(events);
+
+        public Task<IReadOnlyList<EpisodicMemoryEvent>> QueryRangeAsync(Guid companionId, DateTimeOffset fromUtc, DateTimeOffset toUtc, int take = 500, CancellationToken cancellationToken = default)
             => Task.FromResult(events);
     }
 
@@ -128,5 +136,32 @@ public sealed class ConsolidationServiceTests
             _processed.Add(episodicEventId);
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class InMemoryCompanionDirectory(IReadOnlyList<CompanionScope> companions) : ICompanionDirectory
+    {
+        public Task<IReadOnlyList<CompanionScope>> ListActiveAsync(CancellationToken cancellationToken = default) => Task.FromResult(companions);
+
+        public Task<CompanionScope?> GetByCompanionIdAsync(Guid companionId, CancellationToken cancellationToken = default)
+            => Task.FromResult(companions.FirstOrDefault(x => x.CompanionId == companionId));
+    }
+
+    private sealed class InMemoryCognitiveProfileResolver : ICompanionCognitiveProfileResolver
+    {
+        public Task<ResolvedCompanionCognitiveProfile> ResolveByCompanionIdAsync(Guid companionId, CancellationToken cancellationToken = default)
+        {
+            var profile = new CompanionCognitiveProfileDocument();
+            return Task.FromResult(
+                new ResolvedCompanionCognitiveProfile(
+                    companionId,
+                    Guid.Empty,
+                    1,
+                    profile,
+                    new CompanionCognitiveRuntimePolicy(companionId, Guid.Empty, 1, profile, new RuntimeLimits(120, 20, 8, 1)),
+                    IsFallback: true));
+        }
+
+        public Task<ResolvedCompanionCognitiveProfile> ResolveBySessionIdAsync(string sessionId, CancellationToken cancellationToken = default)
+            => ResolveByCompanionIdAsync(Guid.Empty, cancellationToken);
     }
 }

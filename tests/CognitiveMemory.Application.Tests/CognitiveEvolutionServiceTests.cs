@@ -1,4 +1,5 @@
 using CognitiveMemory.Application.Abstractions;
+using CognitiveMemory.Application.Cognitive;
 using CognitiveMemory.Application.Planning;
 using CognitiveMemory.Application.Reasoning;
 using CognitiveMemory.Application.Truth;
@@ -22,6 +23,7 @@ public sealed class CognitiveEvolutionServiceTests
         var episodicRepo = new InMemoryEpisodicRepo(episodes);
         var semanticRepo = new InMemorySemanticRepo();
         var proceduralRepo = new InMemoryProceduralRepo();
+        var directory = new InMemoryCompanionDirectory([new CompanionScope(Guid.NewGuid(), "s1", "u1")]);
         var options = new CognitiveReasoningOptions
         {
             LookbackHours = 24,
@@ -29,7 +31,7 @@ public sealed class CognitiveEvolutionServiceTests
             SuggestProceduralPatterns = true
         };
 
-        var service = new CognitiveReasoningService(episodicRepo, semanticRepo, proceduralRepo, options);
+        var service = new CognitiveReasoningService(episodicRepo, semanticRepo, proceduralRepo, directory, new InMemoryCognitiveProfileResolver(), options);
         var result = await service.RunOnceAsync();
 
         Assert.Equal(1, result.InferredClaims);
@@ -48,6 +50,8 @@ public sealed class CognitiveEvolutionServiceTests
         var semanticRepo = new InMemorySemanticRepo([claimA, claimB]);
         var service = new TruthMaintenanceService(
             semanticRepo,
+            new InMemoryCompanionDirectory([new CompanionScope(Guid.NewGuid(), "s1", "u1")]),
+            new InMemoryCognitiveProfileResolver(),
             new TruthMaintenanceOptions
             {
                 UncertainThreshold = 0.9,
@@ -137,6 +141,9 @@ public sealed class CognitiveEvolutionServiceTests
 
             return Task.FromResult<IReadOnlyList<EpisodicMemoryEvent>>(rows);
         }
+
+        public Task<IReadOnlyList<EpisodicMemoryEvent>> QueryRangeAsync(Guid companionId, DateTimeOffset fromUtc, DateTimeOffset toUtc, int take = 500, CancellationToken cancellationToken = default)
+            => QueryRangeAsync(fromUtc, toUtc, take, cancellationToken);
     }
 
     private sealed class InMemorySemanticRepo : ISemanticMemoryRepository
@@ -278,5 +285,32 @@ public sealed class CognitiveEvolutionServiceTests
                     .Take(take)
                     .ToArray());
         }
+    }
+
+    private sealed class InMemoryCompanionDirectory(IReadOnlyList<CompanionScope> companions) : ICompanionDirectory
+    {
+        public Task<IReadOnlyList<CompanionScope>> ListActiveAsync(CancellationToken cancellationToken = default) => Task.FromResult(companions);
+
+        public Task<CompanionScope?> GetByCompanionIdAsync(Guid companionId, CancellationToken cancellationToken = default)
+            => Task.FromResult(companions.FirstOrDefault(x => x.CompanionId == companionId));
+    }
+
+    private sealed class InMemoryCognitiveProfileResolver : ICompanionCognitiveProfileResolver
+    {
+        public Task<ResolvedCompanionCognitiveProfile> ResolveByCompanionIdAsync(Guid companionId, CancellationToken cancellationToken = default)
+        {
+            var profile = new CompanionCognitiveProfileDocument();
+            return Task.FromResult(
+                new ResolvedCompanionCognitiveProfile(
+                    companionId,
+                    Guid.Empty,
+                    1,
+                    profile,
+                    new CompanionCognitiveRuntimePolicy(companionId, Guid.Empty, 1, profile, new RuntimeLimits(120, 20, 8, 1)),
+                    IsFallback: true));
+        }
+
+        public Task<ResolvedCompanionCognitiveProfile> ResolveBySessionIdAsync(string sessionId, CancellationToken cancellationToken = default)
+            => ResolveByCompanionIdAsync(Guid.Empty, cancellationToken);
     }
 }

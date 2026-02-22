@@ -6,19 +6,22 @@ namespace CognitiveMemory.Infrastructure.SemanticKernel;
 
 public sealed class SemanticKernelFactory(SemanticKernelOptions options)
 {
-    public Kernel CreateChatKernel() => CreateForModel(options.ChatModelId);
+    public Kernel CreateChatKernel()
+        => CreateForModel(options.ChatModelId, options.Provider, options.OllamaEndpoint);
 
     public Kernel CreateClaimExtractionKernel()
     {
         var modelId = FirstNonEmpty(options.ClaimExtractionModelId, options.LoopModelId, options.ChatModelId);
-        return CreateForModel(modelId);
+        var provider = FirstNonEmpty(options.ClaimExtractionProvider, options.Provider);
+        var ollamaEndpoint = FirstNonEmpty(options.ClaimExtractionOllamaEndpoint, options.OllamaEndpoint, "http://localhost:11434");
+        return CreateForModel(modelId, provider, ollamaEndpoint);
     }
 
-    private Kernel CreateForModel(string modelId)
+    private Kernel CreateForModel(string modelId, string provider, string? ollamaEndpoint)
     {
         var kernelBuilder = Kernel.CreateBuilder();
 
-        if (string.Equals(options.Provider, "OpenAI", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(provider, "OpenAI", StringComparison.OrdinalIgnoreCase))
         {
             if (string.IsNullOrWhiteSpace(options.OpenAiApiKey))
             {
@@ -29,9 +32,9 @@ public sealed class SemanticKernelFactory(SemanticKernelOptions options)
             return kernelBuilder.Build();
         }
 
-        if (string.Equals(options.Provider, "Ollama", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(provider, "Ollama", StringComparison.OrdinalIgnoreCase))
         {
-            var endpoint = options.OllamaEndpoint ?? "http://localhost:11434";
+            var endpoint = string.IsNullOrWhiteSpace(ollamaEndpoint) ? "http://localhost:11434" : ollamaEndpoint;
             kernelBuilder.AddOllamaChatCompletion(modelId, new Uri(endpoint));
             return kernelBuilder.Build();
         }

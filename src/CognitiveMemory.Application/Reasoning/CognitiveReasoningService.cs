@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using CognitiveMemory.Application.Abstractions;
+using CognitiveMemory.Application.Cognitive;
 using CognitiveMemory.Domain.Memory;
 
 namespace CognitiveMemory.Application.Reasoning;
@@ -8,6 +9,8 @@ public sealed partial class CognitiveReasoningService(
     IEpisodicMemoryRepository episodicRepository,
     ISemanticMemoryRepository semanticRepository,
     IProceduralMemoryRepository proceduralRepository,
+    ICompanionDirectory companionDirectory,
+    ICompanionCognitiveProfileResolver cognitiveProfileResolver,
     CognitiveReasoningOptions options) : ICognitiveReasoningService
 {
     private static readonly Regex SemanticPattern = ClaimPattern();
@@ -16,79 +19,98 @@ public sealed partial class CognitiveReasoningService(
     {
         var startedAtUtc = DateTimeOffset.UtcNow;
         var fromUtc = startedAtUtc.AddHours(-Math.Max(1, options.LookbackHours));
+        var companions = await companionDirectory.ListActiveAsync(cancellationToken);
 
-        var episodes = await episodicRepository.QueryRangeAsync(
-            fromUtc,
-            startedAtUtc,
-            Math.Clamp(options.MaxEpisodesScanned, 10, 2000),
-            cancellationToken);
-
-        var activeClaims = await semanticRepository.QueryClaimsAsync(
-            status: SemanticClaimStatus.Active,
-            take: Math.Clamp(options.MaxClaimsScanned, 10, 2000),
-            cancellationToken: cancellationToken);
-        var activeClaimIndex = BuildClaimIndex(activeClaims);
-
-        var clusters = BuildClusters(episodes);
+        var episodesScanned = 0;
+        var claimsScanned = 0;
         var inferredClaims = 0;
         var confidenceAdjustments = 0;
         var proceduralSuggestions = 0;
+        var weakClaims = 0;
 
-        foreach (var cluster in clusters.Values.Where(x => x.Occurrences >= Math.Max(2, options.MinPatternOccurrences)))
+        foreach (var companion in companions)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var inferredConfidence = Math.Clamp(
-                options.BaseInferenceConfidence + ((cluster.Occurrences - 1) * options.ConfidenceStepPerOccurrence),
-                0.05,
-                options.MaxInferredConfidence);
-
-            var existing = activeClaimIndex.GetValueOrDefault(BuildKey(cluster.Subject, cluster.Predicate, cluster.Value));
-
-            if (existing is null)
-            {
-                var claim = CreateClaim(cluster.Subject, cluster.Predicate, cluster.Value, inferredConfidence, "reasoned");
-                var created = await semanticRepository.CreateClaimAsync(claim, cancellationToken);
-                await semanticRepository.AddEvidenceAsync(
-                    BuildEvidence(created.ClaimId, cluster),
-                    cancellationToken);
-
-                inferredClaims++;
-                continue;
-            }
-
-            if ((inferredConfidence - existing.Confidence) < options.MinConfidenceDeltaForAdjustment)
-            {
-                continue;
-            }
-
-            var strengthened = CreateClaim(
-                existing.Subject,
-                existing.Predicate,
-                existing.Value,
-                inferredConfidence,
-                existing.Scope,
-                existing.ValidFromUtc,
-                existing.ValidToUtc);
-
-            var replacement = await semanticRepository.CreateClaimAsync(strengthened, cancellationToken);
-            await semanticRepository.SupersedeAsync(existing.ClaimId, replacement.ClaimId, cancellationToken);
-            await semanticRepository.AddEvidenceAsync(
-                BuildEvidence(replacement.ClaimId, cluster),
+            var profile = await ResolveProfileAsync(companion.CompanionId, cancellationToken);
+            var episodes = await episodicRepository.QueryRangeAsync(
+                companion.CompanionId,
+                fromUtc,
+                startedAtUtc,
+                Math.Clamp(options.MaxEpisodesScanned, 10, 2000),
                 cancellationToken);
-            confidenceAdjustments++;
-        }
+            episodesScanned += episodes.Count;
 
-        if (options.SuggestProceduralPatterns)
-        {
-            proceduralSuggestions = await SuggestProceduralPatternsAsync(episodes, cancellationToken);
-        }
+            var activeClaims = await semanticRepository.QueryClaimsAsync(
+                companion.CompanionId,
+                status: SemanticClaimStatus.Active,
+                take: Math.Clamp(options.MaxClaimsScanned, 10, 2000),
+                cancellationToken: cancellationToken);
+            claimsScanned += activeClaims.Count;
+            weakClaims += activeClaims.Count(x => x.Confidence <= options.WeakClaimThreshold);
+            var activeClaimIndex = BuildClaimIndex(activeClaims);
 
-        var weakClaims = activeClaims.Count(x => x.Confidence <= options.WeakClaimThreshold);
+            var clusters = BuildClusters(episodes);
+            foreach (var cluster in clusters.Values.Where(x => x.Occurrences >= Math.Max(2, options.MinPatternOccurrences)))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var inferredConfidence = Math.Clamp(
+                    options.BaseInferenceConfidence + ((cluster.Occurrences - 1) * options.ConfidenceStepPerOccurrence),
+                    0.05,
+                    options.MaxInferredConfidence);
+                inferredConfidence = Math.Clamp(
+                    inferredConfidence * Math.Clamp(profile.Reasoning.EvidenceStrictness + 0.4, 0.5, 1.3),
+                    0.05,
+                    options.MaxInferredConfidence);
+
+                var existing = activeClaimIndex.GetValueOrDefault(BuildKey(cluster.Subject, cluster.Predicate, cluster.Value));
+
+                if (existing is null)
+                {
+                    var claim = CreateClaim(cluster.Subject, cluster.Predicate, cluster.Value, inferredConfidence, "reasoned");
+                    var created = await semanticRepository.CreateClaimAsync(companion.CompanionId, claim, cancellationToken);
+                    await semanticRepository.AddEvidenceAsync(
+                        companion.CompanionId,
+                        BuildEvidence(created.ClaimId, cluster),
+                        cancellationToken);
+
+                    inferredClaims++;
+                    continue;
+                }
+
+                if ((inferredConfidence - existing.Confidence) < options.MinConfidenceDeltaForAdjustment)
+                {
+                    continue;
+                }
+
+                var strengthened = CreateClaim(
+                    existing.Subject,
+                    existing.Predicate,
+                    existing.Value,
+                    inferredConfidence,
+                    existing.Scope,
+                    existing.ValidFromUtc,
+                    existing.ValidToUtc);
+
+                var replacement = await semanticRepository.CreateClaimAsync(companion.CompanionId, strengthened, cancellationToken);
+                await semanticRepository.SupersedeAsync(companion.CompanionId, existing.ClaimId, replacement.ClaimId, cancellationToken);
+                await semanticRepository.AddEvidenceAsync(
+                    companion.CompanionId,
+                    BuildEvidence(replacement.ClaimId, cluster),
+                    cancellationToken);
+                confidenceAdjustments++;
+            }
+
+            if (options.SuggestProceduralPatterns)
+            {
+                proceduralSuggestions += await SuggestProceduralPatternsAsync(companion.CompanionId, episodes, profile, cancellationToken);
+            }
+        }
 
         return new CognitiveReasoningRunResult(
-            episodes.Count,
-            activeClaims.Count,
+            episodesScanned,
+            claimsScanned,
             inferredClaims,
             confidenceAdjustments,
             weakClaims,
@@ -98,7 +120,9 @@ public sealed partial class CognitiveReasoningService(
     }
 
     private async Task<int> SuggestProceduralPatternsAsync(
+        Guid companionId,
         IReadOnlyList<EpisodicMemoryEvent> episodes,
+        CompanionCognitiveProfileDocument profile,
         CancellationToken cancellationToken)
     {
         var signals = episodes
@@ -117,20 +141,23 @@ public sealed partial class CognitiveReasoningService(
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var existing = await proceduralRepository.QueryByTriggerAsync(signal.Trigger, 1, cancellationToken);
+            var existing = await proceduralRepository.QueryByTriggerAsync(companionId, signal.Trigger, 1, cancellationToken);
             if (existing.Count > 0)
             {
                 continue;
             }
 
             var now = DateTimeOffset.UtcNow;
+            var strategy = profile.Adaptation.Procedurality >= profile.Adaptation.Adaptivity
+                ? "Apply known workflow first, then adapt if constraints change."
+                : "Adapt workflow dynamically to new constraints, then capture the stable pattern.";
             var routine = new ProceduralRoutine(
                 Guid.NewGuid(),
                 signal.Trigger,
                 $"Routine: {signal.Trigger}",
                 [
                     $"Reconstruct context for `{signal.Trigger}` from recent memory.",
-                    "Apply the known workflow and validate checkpoints.",
+                    strategy,
                     "Record execution outcome and learning back into memory."
                 ],
                 ["Outcome validated", "Follow-up captured"],
@@ -138,7 +165,7 @@ public sealed partial class CognitiveReasoningService(
                 now,
                 now);
 
-            await proceduralRepository.UpsertAsync(routine, cancellationToken);
+            await proceduralRepository.UpsertAsync(companionId, routine, cancellationToken);
             created++;
         }
 
@@ -285,6 +312,18 @@ public sealed partial class CognitiveReasoningService(
         }
 
         return text[..120];
+    }
+
+    private async Task<CompanionCognitiveProfileDocument> ResolveProfileAsync(Guid companionId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (await cognitiveProfileResolver.ResolveByCompanionIdAsync(companionId, cancellationToken)).Profile;
+        }
+        catch
+        {
+            return new CompanionCognitiveProfileDocument();
+        }
     }
 
     [GeneratedRegex("^(?<subject>[^.?!]+?)\\s+(?<predicate>is|are|has|likes|prefers|uses|owns|works at|lives in|needs)\\s+(?<value>[^.?!]+)[.?!]?$", RegexOptions.IgnoreCase | RegexOptions.Compiled)]

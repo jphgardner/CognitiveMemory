@@ -1,0 +1,53 @@
+<div class="app-shell">
+  <aside class="shell-nav">
+    <div class="shell-brand">
+      <p>CognitiveMemory</p>
+      <h1>Companion OS</h1>
+      <span>Unified workspace + enterprise operations</span>
+    </div>
+
+    <nav class="shell-links">
+      <a routerLink="/portal" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: false }">
+        <strong>Portal</strong>
+        <span>Companions, creation, ownership</span>
+      </a>
+      <a [routerLink]="selectedCompanionId() ? ['/workspace', selectedCompanionId()] : ['/workspace']" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: false }">
+        <strong>Workspace</strong>
+        <span>Chat, memory, debates, evidence</span>
+      </a>
+      <a routerLink="/console/overview" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: false }">
+        <strong>Console</strong>
+        <span>Telemetry, analytics, operations</span>
+      </a>
+    </nav>
+
+    <div class="shell-nav-footer">
+      <p *ngIf="user(); else noUser">{{ user()?.email }}</p>
+      <ng-template #noUser><p>Not signed in</p></ng-template>
+      <div class="row">
+        <button mat-stroked-button type="button" (click)="openWorkspace()">Open Active Workspace</button>
+        <button mat-button type="button" (click)="logout()">Logout</button>
+      </div>
+    </div>
+  </aside>
+
+  <section class="shell-main">
+    <header class="shell-topbar">
+      <div>
+        <p class="label">Product</p>
+        <h2>AI Companions Platform</h2>
+      </div>
+
+      <div class="shell-actions">
+        <label>
+          <span class="label">API Base</span>
+          <input [ngModel]="apiBaseDraft()" (ngModelChange)="apiBaseDraft.set($event)" (change)="saveApiBase()" />
+        </label>
+      </div>
+    </header>
+
+    <main class="shell-content">
+      <router-outlet></router-outlet>
+    </main>
+  </section>
+</div>

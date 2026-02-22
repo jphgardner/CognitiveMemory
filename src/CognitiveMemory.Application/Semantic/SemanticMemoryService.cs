@@ -1,9 +1,13 @@
 using CognitiveMemory.Application.Abstractions;
+using CognitiveMemory.Application.Cognitive;
 using CognitiveMemory.Domain.Memory;
 
 namespace CognitiveMemory.Application.Semantic;
 
-public sealed class SemanticMemoryService(ISemanticMemoryRepository repository) : ISemanticMemoryService
+public sealed class SemanticMemoryService(
+    ISemanticMemoryRepository repository,
+    ICompanionDirectory companionDirectory,
+    ICompanionCognitiveProfileResolver cognitiveProfileResolver) : ISemanticMemoryService
 {
     public Task<IReadOnlyList<SemanticClaim>> QueryClaimsAsync(
         string? subject = null,
@@ -102,9 +106,40 @@ public sealed class SemanticMemoryService(ISemanticMemoryRepository repository) 
         return await repository.AddContradictionAsync(contradiction, cancellationToken);
     }
 
-    public Task<int> RunDecayAsync(int staleDays, double decayStep, double minConfidence, CancellationToken cancellationToken = default)
+    public async Task<int> RunDecayAsync(int staleDays, double decayStep, double minConfidence, CancellationToken cancellationToken = default)
     {
-        var staleBeforeUtc = DateTimeOffset.UtcNow.AddDays(-Math.Max(1, staleDays));
-        return repository.DecayActiveClaimsAsync(staleBeforeUtc, Math.Clamp(decayStep, 0.01, 0.5), Math.Clamp(minConfidence, 0, 1), cancellationToken);
+        var companions = await companionDirectory.ListActiveAsync(cancellationToken);
+        var total = 0;
+        foreach (var companion in companions)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var profile = await ResolveProfileAsync(companion.CompanionId, cancellationToken);
+            var staleBeforeUtc = DateTimeOffset.UtcNow.AddDays(-Math.Max(1, staleDays));
+            var effectiveDecayStep = Math.Clamp(
+                decayStep * Math.Clamp(profile.Memory.Decay.SemanticDailyDecay * 20, 0.5, 2.0),
+                0.01,
+                0.5);
+            var affected = await repository.DecayActiveClaimsAsync(
+                companion.CompanionId,
+                staleBeforeUtc,
+                effectiveDecayStep,
+                Math.Clamp(minConfidence, 0, 1),
+                cancellationToken);
+            total += affected;
+        }
+
+        return total;
+    }
+
+    private async Task<CompanionCognitiveProfileDocument> ResolveProfileAsync(Guid companionId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (await cognitiveProfileResolver.ResolveByCompanionIdAsync(companionId, cancellationToken)).Profile;
+        }
+        catch
+        {
+            return new CompanionCognitiveProfileDocument();
+        }
     }
 }

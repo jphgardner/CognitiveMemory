@@ -8,6 +8,7 @@ using CognitiveMemory.Application.Procedural;
 using CognitiveMemory.Application.Reasoning;
 using CognitiveMemory.Application.Semantic;
 using CognitiveMemory.Application.SelfModel;
+using CognitiveMemory.Application.Relationships;
 using CognitiveMemory.Application.Truth;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -25,6 +26,7 @@ public static class DependencyInjection
         services.AddScoped<IIdentityEvolutionService, IdentityEvolutionService>();
         services.AddScoped<IProceduralMemoryService, ProceduralMemoryService>();
         services.AddScoped<ISemanticMemoryService, SemanticMemoryService>();
+        services.AddScoped<IMemoryRelationshipService, MemoryRelationshipService>();
         services.AddScoped<ISelfModelService, SelfModelService>();
         services.AddScoped<ITruthMaintenanceService, TruthMaintenanceService>();
 

@@ -1,0 +1,354 @@
+<section class="workspace-page">
+  <article class="panel p-4" *ngIf="companion() as companion; else noCompanion">
+    <div class="panel-head">
+      <h3>{{ companion.name }} Workspace</h3>
+      <span>{{ companion.sessionId }}</span>
+    </div>
+
+    <div class="kpi-grid">
+      <article class="kpi-card">
+        <p class="label">Semantic Claims</p>
+        <h3>{{ summary()?.semanticClaimCount ?? 0 }}</h3>
+      </article>
+      <article class="kpi-card">
+        <p class="label">Episodic Events</p>
+        <h3>{{ summary()?.episodicEventCount ?? 0 }}</h3>
+      </article>
+      <article class="kpi-card">
+        <p class="label">Relationships</p>
+        <h3>{{ summary()?.relationshipCount ?? 0 }}</h3>
+      </article>
+      <article class="kpi-card">
+        <p class="label">Debates</p>
+        <h3>{{ summary()?.debateCount ?? 0 }}</h3>
+      </article>
+    </div>
+
+    <div class="row mt-3">
+      <button mat-raised-button color="primary" type="button" (click)="refresh()" [disabled]="loading()">Refresh Workspace</button>
+      <button mat-stroked-button type="button" (click)="runDebate()">Run Debate</button>
+      <button mat-stroked-button type="button" (click)="openInsightsDialog()">Open Insights</button>
+      <button mat-stroked-button type="button" (click)="openConsole('operations')">Open Operations</button>
+    </div>
+  </article>
+
+  <mat-tab-group *ngIf="companion()">
+    <mat-tab label="Chat + Evidence">
+      <section class="chat-layout page mt-3">
+        <article class="panel p-4">
+          <div class="panel-head">
+            <h3>Companion Chat</h3>
+            <span>{{ turns().length }} turns</span>
+          </div>
+
+          <div class="chat-log p-2">
+            <article *ngFor="let turn of turns()" class="turn p-3" [class.user]="turn.role === 'user'" [class.assistant]="turn.role === 'assistant'">
+              <div class="turn-role">{{ turn.role }}</div>
+              <div class="turn-text" *ngIf="turn.role === 'user'">{{ turn.text }}</div>
+              <div class="turn-text markdown-body" *ngIf="turn.role === 'assistant'" [innerHTML]="assistantDisplayHtml(turn.text)"></div>
+              <details *ngIf="turn.toolCalls?.length" class="tool-call-list">
+                <summary>Tool evidence ({{ turn.toolCalls?.length }})</summary>
+                <div class="tool-call" *ngFor="let call of turn.toolCalls">
+                  <div class="tool-line">
+                    <strong>{{ call.toolName }}</strong>
+                    <span>{{ call.succeeded ? 'ok' : 'failed' }}</span>
+                  </div>
+                </div>
+              </details>
+            </article>
+          </div>
+
+          <div class="grid gap-2 mt-3">
+            <textarea
+              rows="4"
+              [ngModel]="messageInput()"
+              (ngModelChange)="setMessageInput($event)"
+              placeholder="Message companion..."
+              [disabled]="streaming()"></textarea>
+            <div class="row">
+              <button mat-raised-button color="primary" type="button" (click)="sendChat()" [disabled]="!canSend()">
+                {{ streaming() ? 'Streaming...' : 'Send' }}
+              </button>
+              <button mat-stroked-button type="button" (click)="createQuickClaim()" [disabled]="messageInput().trim().length === 0">Save as Memory Note</button>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel p-4">
+          <div class="panel-head">
+            <h3>Live Evidence Feed</h3>
+            <span>{{ filteredEvidenceEvents().length }} / {{ events().length }} events</span>
+          </div>
+
+          <div class="evidence-controls mt-2">
+            <label>
+              <span class="label">Search</span>
+              <input
+                [ngModel]="evidenceSearch()"
+                (ngModelChange)="setEvidenceSearch($event)"
+                placeholder="Filter by type, payload, status..." />
+            </label>
+            <label>
+              <span class="label">Type</span>
+              <select [ngModel]="evidenceTypeFilter()" (ngModelChange)="setEvidenceTypeFilter($event)">
+                <option value="all">All event types</option>
+                <option *ngFor="let type of evidenceTypes()" [value]="type">{{ type }}</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="evidence-group-list mt-3" *ngIf="groupedEvidenceEvents().length > 0; else noEvidenceRows">
+            <section class="evidence-group" *ngFor="let group of groupedEvidenceEvents()">
+              <button type="button" class="evidence-group-head" (click)="toggleEvidenceGroup(group.eventType)">
+                <div class="evidence-group-main">
+                  <mat-icon>{{ evidenceGroupExpanded(group.eventType) ? 'expand_more' : 'chevron_right' }}</mat-icon>
+                  <span class="evidence-group-title">{{ group.eventType }}</span>
+                  <span class="evidence-count">{{ group.total }}</span>
+                </div>
+                <span class="evidence-group-time">{{ group.latestAtUtc | date:'HH:mm:ss' }}</span>
+              </button>
+
+              <div class="evidence-items" *ngIf="evidenceGroupExpanded(group.eventType)">
+                <article class="evidence-row" *ngFor="let row of group.events.slice(0, evidencePerGroup())">
+                  <div class="evidence-row-head">
+                    <div class="evidence-row-meta">
+                      <span class="evidence-status" [class.ok]="evidenceStatusTone(row.status) === 'ok'" [class.error]="evidenceStatusTone(row.status) === 'error'" [class.pending]="evidenceStatusTone(row.status) === 'pending'">
+                        {{ row.status || 'unknown' }}
+                      </span>
+                      <span class="pill">{{ row.aggregateType }}</span>
+                    </div>
+                    <div class="row">
+                      <span class="evidence-row-time">{{ row.occurredAtUtc | date:'HH:mm:ss' }}</span>
+                      <button mat-button type="button" (click)="selectEvidenceEvent(row.eventId)">
+                        {{ isEvidenceEventSelected(row.eventId) ? 'Hide detail' : 'View detail' }}
+                      </button>
+                    </div>
+                  </div>
+                  <p class="evidence-preview">{{ row.payloadPreview }}</p>
+                  <pre class="evidence-detail" *ngIf="isEvidenceEventSelected(row.eventId)">{{ row.payloadPreview }}</pre>
+                </article>
+
+                <p class="event-preview" *ngIf="group.total > evidencePerGroup()">
+                  +{{ group.total - evidencePerGroup() }} more {{ group.eventType }} events
+                </p>
+              </div>
+            </section>
+          </div>
+          <ng-template #noEvidenceRows>
+            <p class="event-preview mt-3">No evidence events match your current filter.</p>
+          </ng-template>
+        </article>
+      </section>
+    </mat-tab>
+
+    <mat-tab label="Memory">
+      <section class="page mt-3">
+        <article class="panel p-4">
+          <div class="panel-head">
+            <h3>Memory Center</h3>
+            <span>{{ memoryTimelineItems().length }} memory entries</span>
+          </div>
+          <div class="row mt-2">
+            <button mat-stroked-button type="button" [class.active]="isMemoryTabMode('timeline')" (click)="setMemoryTabMode('timeline')">Timeline View</button>
+            <button mat-stroked-button type="button" [class.active]="isMemoryTabMode('graph')" (click)="setMemoryTabMode('graph')">Graph Studio</button>
+            <button mat-stroked-button type="button" (click)="refresh()" [disabled]="loading()">Refresh Memory</button>
+          </div>
+          <div class="kpi-grid mt-3">
+            <article class="kpi-card">
+              <p class="label">Claims</p>
+              <h3>{{ summary()?.semanticClaimCount ?? 0 }}</h3>
+            </article>
+            <article class="kpi-card">
+              <p class="label">Episodes</p>
+              <h3>{{ summary()?.episodicEventCount ?? 0 }}</h3>
+            </article>
+            <article class="kpi-card">
+              <p class="label">Relationships</p>
+              <h3>{{ summary()?.relationshipCount ?? 0 }}</h3>
+            </article>
+            <article class="kpi-card">
+              <p class="label">Last Activity</p>
+              <h3>{{ summary()?.lastActivityUtc ? (summary()?.lastActivityUtc | date:'HH:mm:ss') : '-' }}</h3>
+            </article>
+          </div>
+        </article>
+
+        <section *ngIf="isMemoryTabMode('timeline')" class="page mt-3">
+          <article class="panel p-4">
+            <div class="panel-head">
+              <h3>Memory Timeline</h3>
+              <span *ngIf="memoryTimelineLoading()">Loading...</span>
+              <span *ngIf="!memoryTimelineLoading()">{{ memoryTimelineTotal() }} items</span>
+            </div>
+            <div class="timeline-filters mt-2">
+              <label>
+                <span class="label">Type</span>
+                <select [ngModel]="timelineFilterKind()" (ngModelChange)="setTimelineFilterKind($event)">
+                  <option value="all">All types</option>
+                  <option value="semantic">Claims</option>
+                  <option value="episodic">Episodes</option>
+                  <option value="self">Preferences</option>
+                  <option value="procedural">Routines</option>
+                  <option value="scheduled">Scheduled</option>
+                  <option value="debate">Debates</option>
+                  <option value="tool">Tools</option>
+                </select>
+              </label>
+              <label>
+                <span class="label">Relationships</span>
+                <select [ngModel]="timelineFilterLinked()" (ngModelChange)="setTimelineFilterLinked($event)">
+                  <option value="all">All</option>
+                  <option value="linked">Has links</option>
+                  <option value="unlinked">No links</option>
+                </select>
+              </label>
+              <label class="search-wide">
+                <span class="label">Search</span>
+                <input [ngModel]="timelineFilterQuery()" (ngModelChange)="setTimelineFilterQuery($event)" placeholder="Search memory value, label, relationship..." />
+              </label>
+            </div>
+
+            <div class="timeline-paging mt-2" *ngIf="memoryTimelineTotal() > 0">
+              <span class="event-preview">Showing {{ timelinePageStart() }}-{{ timelinePageEnd() }} of {{ memoryTimelineTotal() }}</span>
+              <div class="actions">
+                <label>
+                  <span class="label">Per page</span>
+                  <select [ngModel]="timelinePageSize()" (ngModelChange)="setTimelinePageSize($event)">
+                    <option [ngValue]="10">10</option>
+                    <option [ngValue]="20">20</option>
+                    <option [ngValue]="40">40</option>
+                    <option [ngValue]="80">80</option>
+                  </select>
+                </label>
+                <button mat-stroked-button type="button" (click)="previousTimelinePage()" [disabled]="timelinePage() <= 1">Previous</button>
+                <span class="event-preview">Page {{ timelinePage() }} / {{ timelineTotalPages() }}</span>
+                <button mat-stroked-button type="button" (click)="nextTimelinePage()" [disabled]="timelinePage() >= timelineTotalPages()">Next</button>
+              </div>
+            </div>
+
+            <div class="timeline-root mt-3" *ngIf="groupedTimelineItems().length > 0; else noTimelineRows">
+              <section class="timeline-day" *ngFor="let group of groupedTimelineItems()">
+                <div class="timeline-day-head">
+                  <h4>{{ group.dateLabel }}</h4>
+                  <span>{{ group.items.length }} item(s)</span>
+                </div>
+                <div class="timeline-rail">
+                  <article class="timeline-node" *ngFor="let item of group.items">
+                    <div class="timeline-dot"></div>
+                    <div class="timeline-card">
+                      <div class="event-top">
+                        <strong>{{ item.title }}</strong>
+                        <span>{{ item.updatedAtUtc | date:'HH:mm:ss' }}</span>
+                      </div>
+                      <div class="row mt-1">
+                        <span class="pill">{{ timelineKindLabel(item.kind) }}</span>
+                        <span class="pill">{{ item.relationships.length }} link(s)</span>
+                        <button mat-button type="button" *ngIf="item.relationships.length > 0" (click)="toggleTimelineRelationships(item.key)">
+                          {{ timelineRelationshipsExpanded(item.key) ? 'Hide Links' : 'Show Links' }}
+                        </button>
+                      </div>
+                      <p class="event-preview mt-2">{{ item.value }}</p>
+                      <p class="event-preview" *ngIf="item.meta">{{ item.meta }}</p>
+                      <div class="timeline-links mt-2" *ngIf="item.relationships.length > 0 && timelineRelationshipsExpanded(item.key)">
+                        <article class="event-card p-2" *ngFor="let rel of item.relationships">
+                          <div class="event-top">
+                            <strong>{{ rel.relationshipType }}</strong>
+                            <span>{{ rel.direction }}</span>
+                          </div>
+                          <p class="event-preview">{{ rel.peerLabel }}</p>
+                          <p class="event-preview">{{ rel.peerValue }}</p>
+                        </article>
+                      </div>
+                    </div>
+                  </article>
+                </div>
+              </section>
+            </div>
+            <ng-template #noTimelineRows>
+              <p class="event-preview">No memory entries yet. Start chatting or add memory notes to build timeline.</p>
+            </ng-template>
+          </article>
+        </section>
+
+        <section *ngIf="isMemoryTabMode('graph')" class="page mt-3">
+          <app-workspace-memory-explorer
+            [sessionId]="companion()?.sessionId ?? null"
+            [companionId]="companion()?.companionId ?? null"
+            [claims]="memoryTimelineClaims()"
+            [disabled]="loading()"
+            [initialView]="memoryExplorerView()"
+            [autoRefreshKey]="memoryExplorerRefreshKey()"
+            (viewChange)="onMemoryExplorerViewChanged($event)">
+          </app-workspace-memory-explorer>
+        </section>
+      </section>
+    </mat-tab>
+
+    <mat-tab label="Debates + Metrics">
+      <section class="page mt-3">
+        <article class="panel p-4">
+          <div class="panel-head">
+            <h3>Debates</h3>
+            <span>{{ debates().length }} sessions</span>
+          </div>
+          <div class="event-list">
+            <article *ngFor="let debate of debates()" class="event-card">
+              <div class="event-top">
+                <strong>{{ debate.topicKey }}</strong>
+                <div class="row">
+                  <span>{{ debate.state }}</span>
+                  <button mat-stroked-button type="button" (click)="openDebate(debate.debateId)">Open</button>
+                </div>
+              </div>
+              <p class="event-preview">{{ debate.triggerEventType }} · {{ debate.updatedAtUtc | date:'yyyy-MM-dd HH:mm:ss' }}</p>
+            </article>
+          </div>
+        </article>
+
+        <article class="panel p-4" *ngIf="metrics() as metrics">
+          <div class="panel-head">
+            <h3>Workspace Metrics</h3>
+            <span>tool success {{ metrics.toolSuccessRate }}%</span>
+          </div>
+
+          <div class="kpi-grid">
+            <article class="kpi-card">
+              <p class="label">Tool Calls</p>
+              <h3>{{ metrics.totalToolCalls }}</h3>
+            </article>
+            <article class="kpi-card">
+              <p class="label">Successful</p>
+              <h3>{{ metrics.successfulToolCalls }}</h3>
+            </article>
+            <article class="kpi-card">
+              <p class="label">Avg Event Latency</p>
+              <h3>{{ metrics.averagePublishLatencySeconds }}s</h3>
+            </article>
+            <article class="kpi-card">
+              <p class="label">Layers</p>
+              <h3>{{ metrics.layerDistribution.length }}</h3>
+            </article>
+          </div>
+
+          <div class="bars mt-3">
+            <div class="bar-row" *ngFor="let row of metrics.layerDistribution">
+              <div class="bar-label">{{ row.layer }} ({{ row.count }})</div>
+              <div class="bar-track"><div class="bar-fill" [style.width.%]="row.percent"></div></div>
+              <span class="bar-value">{{ row.percent }}%</span>
+            </div>
+          </div>
+        </article>
+      </section>
+    </mat-tab>
+  </mat-tab-group>
+
+  <ng-template #noCompanion>
+    <article class="panel p-6 text-center">
+      <h3>No companion selected</h3>
+      <p class="event-preview">Create/select one in Portal to use the unified workspace.</p>
+      <div class="row justify-center mt-3">
+        <button mat-raised-button color="primary" type="button" (click)="openConsole('chat')">Open Console</button>
+      </div>
+    </article>
+  </ng-template>
+</section>

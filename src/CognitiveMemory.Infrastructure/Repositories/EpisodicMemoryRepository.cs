@@ -1,18 +1,22 @@
 using CognitiveMemory.Application.Abstractions;
 using CognitiveMemory.Domain.Memory;
+using CognitiveMemory.Infrastructure.Events;
 using CognitiveMemory.Infrastructure.Persistence;
+using CognitiveMemory.Infrastructure.Companions;
 using CognitiveMemory.Infrastructure.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
 
 namespace CognitiveMemory.Infrastructure.Repositories;
 
-public sealed class EpisodicMemoryRepository(MemoryDbContext dbContext) : IEpisodicMemoryRepository
+public sealed class EpisodicMemoryRepository(MemoryDbContext dbContext, IOutboxWriter outboxWriter, ICompanionScopeResolver companionScopeResolver) : IEpisodicMemoryRepository
 {
     public async Task AppendAsync(EpisodicMemoryEvent memoryEvent, CancellationToken cancellationToken = default)
     {
+        var companionId = await companionScopeResolver.ResolveCompanionIdOrThrowAsync(memoryEvent.SessionId, cancellationToken);
         var entity = new EpisodicMemoryEventEntity
         {
             EventId = memoryEvent.EventId,
+            CompanionId = companionId,
             SessionId = memoryEvent.SessionId,
             Who = memoryEvent.Who,
             What = memoryEvent.What,
@@ -22,6 +26,21 @@ public sealed class EpisodicMemoryRepository(MemoryDbContext dbContext) : IEpiso
         };
 
         dbContext.EpisodicMemoryEvents.Add(entity);
+        outboxWriter.Enqueue(
+            MemoryEventTypes.EpisodicMemoryCreated,
+            aggregateType: "EpisodicMemoryEvent",
+            aggregateId: memoryEvent.EventId.ToString("N"),
+            payload: new
+            {
+                companionId,
+                memoryEvent.EventId,
+                memoryEvent.SessionId,
+                memoryEvent.Who,
+                memoryEvent.What,
+                memoryEvent.Context,
+                memoryEvent.OccurredAt,
+                memoryEvent.SourceReference
+            });
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
@@ -32,9 +51,10 @@ public sealed class EpisodicMemoryRepository(MemoryDbContext dbContext) : IEpiso
         int take = 100,
         CancellationToken cancellationToken = default)
     {
+        var companionId = await companionScopeResolver.ResolveCompanionIdOrThrowAsync(sessionId, cancellationToken);
         var query = dbContext.EpisodicMemoryEvents
             .AsNoTracking()
-            .Where(x => x.SessionId == sessionId);
+            .Where(x => x.CompanionId == companionId && x.SessionId == sessionId);
 
         if (fromUtc.HasValue)
         {
@@ -60,6 +80,7 @@ public sealed class EpisodicMemoryRepository(MemoryDbContext dbContext) : IEpiso
         int take = 100,
         CancellationToken cancellationToken = default)
     {
+        var companionId = await companionScopeResolver.ResolveCompanionIdOrThrowAsync(sessionId, cancellationToken);
         if (string.IsNullOrWhiteSpace(query))
         {
             return await QueryBySessionAsync(
@@ -79,7 +100,7 @@ public sealed class EpisodicMemoryRepository(MemoryDbContext dbContext) : IEpiso
 
         IQueryable<EpisodicMemoryEventEntity> queryable = dbContext.EpisodicMemoryEvents
             .AsNoTracking()
-            .Where(x => x.SessionId == sessionId);
+            .Where(x => x.CompanionId == companionId && x.SessionId == sessionId);
 
         foreach (var term in normalizedTerms)
         {
@@ -105,9 +126,19 @@ public sealed class EpisodicMemoryRepository(MemoryDbContext dbContext) : IEpiso
         int take = 500,
         CancellationToken cancellationToken = default)
     {
+        throw new InvalidOperationException("Companion-scoped episodic range query is required.");
+    }
+
+    public async Task<IReadOnlyList<EpisodicMemoryEvent>> QueryRangeAsync(
+        Guid companionId,
+        DateTimeOffset fromUtc,
+        DateTimeOffset toUtc,
+        int take = 500,
+        CancellationToken cancellationToken = default)
+    {
         var rows = await dbContext.EpisodicMemoryEvents
             .AsNoTracking()
-            .Where(x => x.OccurredAt >= fromUtc && x.OccurredAt <= toUtc)
+            .Where(x => x.CompanionId == companionId && x.OccurredAt >= fromUtc && x.OccurredAt <= toUtc)
             .OrderByDescending(x => x.OccurredAt)
             .Take(Math.Clamp(take, 1, 1000))
             .ToListAsync(cancellationToken);

@@ -1,0 +1,189 @@
+<section class="portal-shell mx-auto w-full max-w-7xl px-4 py-6">
+  <header class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div class="flex flex-wrap items-end justify-between gap-3">
+      <div>
+        <p class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Client Portal</p>
+        <h1 class="mt-1 text-2xl font-bold tracking-tight text-slate-900">AI Companions</h1>
+        <p class="mt-1 text-sm text-slate-600">Account-scoped companions with strict per-companion memory isolation.</p>
+      </div>
+
+      <div class="flex items-center gap-2 text-sm">
+        <span class="rounded bg-slate-100 px-3 py-1 text-slate-600">{{ authUserEmail() }}</span>
+        <button mat-stroked-button type="button" (click)="logout()">Logout</button>
+        <button mat-raised-button color="primary" type="button" (click)="openCreateDialog()">Create Companion</button>
+      </div>
+    </div>
+  </header>
+
+  <section class="mt-5 grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
+    <aside class="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div class="flex items-center justify-between gap-2">
+        <div>
+          <h2 class="text-lg font-semibold text-slate-900">Companion Directory</h2>
+          <p class="text-xs text-slate-500">{{ companions().length }} companions</p>
+        </div>
+        <button mat-icon-button type="button" aria-label="Create companion" (click)="openCreateDialog()">
+          <mat-icon>add</mat-icon>
+        </button>
+      </div>
+
+      <div *ngIf="loadingCompanions()" class="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+        Loading companions...
+      </div>
+
+      <div *ngIf="!loadingCompanions() && companions().length === 0" class="mt-3 grid min-h-[180px] place-items-center rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center">
+        <div>
+          <h3 class="text-base font-semibold text-slate-900">No companions yet</h3>
+          <p class="mt-1 text-sm text-slate-600">Create one to start.</p>
+        </div>
+      </div>
+
+      <div class="mt-3 grid max-h-[68vh] gap-2 overflow-auto pr-1" *ngIf="!loadingCompanions() && companions().length > 0">
+        <article
+          *ngFor="let companion of companions()"
+          class="rounded-xl border p-3 transition-all"
+          [class.border-teal-500]="selectedCompanionId() === companion.companionId"
+          [class.bg-teal-50]="selectedCompanionId() === companion.companionId"
+          [class.border-slate-200]="selectedCompanionId() !== companion.companionId"
+          [class.bg-white]="selectedCompanionId() !== companion.companionId">
+          <button class="w-full text-left" type="button" (click)="selectCompanion(companion.companionId)">
+            <div class="flex items-start justify-between gap-2">
+              <h3 class="line-clamp-1 text-sm font-semibold text-slate-900">{{ companion.name }}</h3>
+              <span class="rounded bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">{{ companion.tone }}</span>
+            </div>
+            <p class="mt-1 line-clamp-2 text-xs text-slate-600">{{ companion.purpose }}</p>
+            <div class="mt-2 flex items-center justify-between gap-2">
+              <span class="rounded bg-slate-100 px-2 py-1 text-[11px] text-slate-600">{{ companion.sessionId.slice(0, 12) }}</span>
+              <span class="text-[11px] font-semibold" [class.text-teal-700]="selectedCompanionId() === companion.companionId" [class.text-slate-500]="selectedCompanionId() !== companion.companionId">
+                {{ selectedCompanionId() === companion.companionId ? 'selected' : 'select' }}
+              </span>
+            </div>
+          </button>
+
+          <div class="mt-3 flex items-center justify-between gap-2">
+            <button mat-stroked-button type="button" (click)="openWorkspace(companion.companionId)">Workspace</button>
+            <button
+              mat-icon-button
+              type="button"
+              aria-label="Open companion settings"
+              (click)="openSettings(companion.companionId)">
+              <mat-icon>settings</mat-icon>
+            </button>
+          </div>
+        </article>
+      </div>
+    </aside>
+
+    <article class="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <ng-container *ngIf="selectedCompanion() as companion; else noCompanion">
+        <section class="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+          <article class="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div class="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-3">
+              <div>
+                <p class="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500">Companion Command Center</p>
+                <h2 class="text-2xl font-bold tracking-tight text-slate-900">{{ companion.name }}</h2>
+                <p class="mt-1 text-sm text-slate-600">{{ companion.purpose }}</p>
+              </div>
+              <span class="rounded-full bg-emerald-600 px-3 py-1 text-xs font-semibold text-white shadow-sm shadow-emerald-900/30">Active</span>
+            </div>
+
+            <div class="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
+              <span class="rounded bg-white px-2 py-1">tone: {{ companion.tone }}</span>
+              <span class="rounded bg-white px-2 py-1">model: {{ companion.modelHint }}</span>
+              <span class="rounded bg-white px-2 py-1">session: {{ companion.sessionId.slice(0, 12) }}</span>
+            </div>
+
+            <p class="mt-3 text-sm text-slate-600" *ngIf="companion.originStory">{{ companion.originStory }}</p>
+            <p class="mt-3 text-sm text-slate-600">Use Workspace for live interaction and memory operations, then Console for telemetry and runtime controls.</p>
+
+            <div class="mt-4">
+              <p class="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">Quick Actions</p>
+              <div class="mt-2 grid gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  class="group flex items-center gap-2 rounded-lg bg-fuchsia-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-fuchsia-500"
+                  (click)="openWorkspace(companion.companionId)">
+                  <span class="quick-action-icon grid h-7 w-7 place-items-center rounded-md bg-white/20">
+                    <mat-icon>desktop_windows</mat-icon>
+                  </span>
+                  <span>Open Workspace</span>
+                </button>
+
+                <button
+                  type="button"
+                  class="group flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 transition hover:border-slate-400 hover:bg-slate-100"
+                  (click)="openEnterpriseConsole()">
+                  <span class="quick-action-icon grid h-7 w-7 place-items-center rounded-md bg-slate-100 text-slate-700">
+                    <mat-icon>terminal</mat-icon>
+                  </span>
+                  <span>Open Console</span>
+                </button>
+
+                <button
+                  type="button"
+                  class="group flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 transition hover:border-slate-400 hover:bg-slate-100"
+                  (click)="openSettings(companion.companionId)">
+                  <span class="quick-action-icon grid h-7 w-7 place-items-center rounded-md bg-slate-100 text-slate-700">
+                    <mat-icon>tune</mat-icon>
+                  </span>
+                  <span>Cognitive Settings</span>
+                </button>
+
+                <button
+                  type="button"
+                  class="group flex items-center gap-2 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-700 transition hover:bg-rose-100"
+                  (click)="deleteCompanion(companion.companionId)">
+                  <span class="quick-action-icon grid h-7 w-7 place-items-center rounded-md bg-rose-100 text-rose-700">
+                    <mat-icon>archive</mat-icon>
+                  </span>
+                  <span>Archive Companion</span>
+                </button>
+              </div>
+            </div>
+          </article>
+
+          <article class="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <app-cognitive-atlas
+              [profile]="selectedCognitiveProfile()"
+              [compact]="true"
+              [showLegend]="false"
+              title="Cognitive Signature"
+              subtitle="Live behavior shape"></app-cognitive-atlas>
+          </article>
+        </section>
+
+        <section class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <article class="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <p class="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">Verbosity</p>
+            <p class="mt-1 text-sm font-semibold text-slate-800">{{ cognitiveSnapshot().verbosity }}</p>
+          </article>
+          <article class="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <p class="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">Reasoning</p>
+            <p class="mt-1 text-sm font-semibold text-slate-800">{{ cognitiveSnapshot().reasoning }}</p>
+          </article>
+          <article class="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <p class="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">Answer Threshold</p>
+            <p class="mt-1 text-sm font-semibold text-slate-800">{{ cognitiveSnapshot().confidence }}</p>
+          </article>
+          <article class="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <p class="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">Adaptivity</p>
+            <p class="mt-1 text-sm font-semibold text-slate-800">{{ cognitiveSnapshot().adaptation }}</p>
+          </article>
+        </section>
+
+        <p class="mt-4 text-xs text-slate-500">
+          Workspace, Console, and Cognitive Settings are available in the command center actions above.
+        </p>
+      </ng-container>
+
+      <ng-template #noCompanion>
+        <div class="grid min-h-[360px] place-items-center rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 text-center">
+          <div>
+            <h3 class="text-lg font-semibold text-slate-900">Select a companion</h3>
+            <p class="mt-1 text-sm text-slate-600">Choose one from the directory to open its command center.</p>
+          </div>
+        </div>
+      </ng-template>
+    </article>
+  </section>
+</section>

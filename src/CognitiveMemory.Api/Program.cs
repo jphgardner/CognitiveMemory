@@ -4,12 +4,17 @@ using CognitiveMemory.Application.Identity;
 using CognitiveMemory.Application.Planning;
 using CognitiveMemory.Application.Reasoning;
 using CognitiveMemory.Application.Truth;
+using CognitiveMemory.Api.Auth;
+using CognitiveMemory.Api.Security;
 using CognitiveMemory.Api.Endpoints;
 using CognitiveMemory.Api.Background;
 using CognitiveMemory.Api.Middleware;
 using CognitiveMemory.Infrastructure;
 using CognitiveMemory.Infrastructure.Persistence;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.IdentityModel.Tokens;
+using System.Text;
 using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -45,6 +50,48 @@ builder.Services.AddRateLimiter(options =>
                 QueueLimit = 0
             }));
 });
+builder.Services.Configure<JwtAuthOptions>(builder.Configuration.GetSection("Auth:Jwt"));
+builder.Services.AddSingleton<JwtTokenFactory>();
+builder.Services.AddScoped<CompanionOwnershipService>();
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        var jwt = builder.Configuration.GetSection("Auth:Jwt").Get<JwtAuthOptions>() ?? new JwtAuthOptions();
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateIssuerSigningKey = true,
+            ValidateLifetime = true,
+            ValidIssuer = jwt.Issuer,
+            ValidAudience = jwt.Audience,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt.SigningKey)),
+            ClockSkew = TimeSpan.FromMinutes(1)
+        };
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                var path = context.HttpContext.Request.Path;
+                if (!path.HasValue
+                    || (!path.Value.EndsWith("/stream", StringComparison.OrdinalIgnoreCase)
+                        && !path.Value.Contains("/stream/", StringComparison.OrdinalIgnoreCase)))
+                {
+                    return Task.CompletedTask;
+                }
+
+                var token = context.Request.Query["access_token"].ToString();
+                if (!string.IsNullOrWhiteSpace(token))
+                {
+                    context.Token = token.Trim();
+                }
+
+                return Task.CompletedTask;
+            }
+        };
+    });
+builder.Services.AddAuthorization();
 builder.Services.AddProblemDetails();
 builder.Services.AddOpenApi();
 
@@ -52,6 +99,9 @@ var app = builder.Build();
 
 app.UseExceptionHandler();
 app.UseRateLimiter();
+app.UseAuthentication();
+app.UseDatabaseRlsContext();
+app.UseAuthorization();
 app.UseMiddleware<RequestMetricsMiddleware>();
 app.UseRequestContextLogging();
 if (!app.Environment.IsEnvironment("Test"))
@@ -65,6 +115,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.MapDefaultEndpoints();
+app.MapAuthEndpoints();
 app.MapChatEndpoints();
 app.MapEpisodicMemoryEndpoints();
 app.MapProceduralMemoryEndpoints();
@@ -72,10 +123,17 @@ app.MapSelfModelEndpoints();
 app.MapSemanticMemoryEndpoints();
 app.MapConsolidationEndpoints();
 app.MapToolInvocationAuditEndpoints();
+app.MapEventingEndpoints();
 app.MapCognitiveReasoningEndpoints();
 app.MapPlanningEndpoints();
 app.MapIdentityEvolutionEndpoints();
 app.MapTruthMaintenanceEndpoints();
+app.MapSubconsciousDebateEndpoints();
+app.MapScheduledActionEndpoints();
+app.MapMemoryRelationshipEndpoints();
+app.MapCompanionEndpoints();
+app.MapCompanionCognitiveProfileEndpoints();
+app.MapWorkspaceEndpoints();
 
 app.Run();
 

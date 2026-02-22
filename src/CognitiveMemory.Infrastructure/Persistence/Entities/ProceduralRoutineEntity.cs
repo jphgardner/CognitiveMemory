@@ -3,6 +3,7 @@ namespace CognitiveMemory.Infrastructure.Persistence.Entities;
 public sealed class ProceduralRoutineEntity
 {
     public Guid RoutineId { get; set; }
+    public Guid CompanionId { get; set; }
     public string Trigger { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string StepsJson { get; set; } = "[]";

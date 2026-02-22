@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using CognitiveMemory.Application.Abstractions;
+using CognitiveMemory.Application.Cognitive;
 using CognitiveMemory.Domain.Memory;
 
 namespace CognitiveMemory.Application.Consolidation;
@@ -9,6 +10,8 @@ public sealed partial class ConsolidationService(
     ISemanticMemoryRepository semanticRepository,
     IConsolidationStateRepository consolidationStateRepository,
     IClaimExtractionGateway claimExtractionGateway,
+    ICompanionDirectory companionDirectory,
+    ICompanionCognitiveProfileResolver cognitiveProfileResolver,
     ConsolidationOptions options) : IConsolidationService
 {
     private static readonly Regex FactPattern = SemanticPattern();
@@ -17,97 +20,116 @@ public sealed partial class ConsolidationService(
     {
         var started = DateTimeOffset.UtcNow;
         var from = started.AddHours(-Math.Max(1, options.LookbackHours));
-        var candidates = await episodicRepository.QueryRangeAsync(from, started, Math.Max(1, options.MaxCandidatesPerRun), cancellationToken);
-
+        var companions = await companionDirectory.ListActiveAsync(cancellationToken);
+        var scanned = 0;
         var processed = 0;
         var promoted = 0;
         var skipped = 0;
 
-        foreach (var candidate in candidates.OrderBy(x => x.OccurredAt))
+        foreach (var companion in companions)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (await consolidationStateRepository.IsProcessedAsync(candidate.EventId, cancellationToken))
-            {
-                skipped++;
-                continue;
-            }
-
-            var claim = await TryExtractClaimAsync(candidate, cancellationToken);
-            if (claim is null)
-            {
-                await consolidationStateRepository.MarkProcessedAsync(candidate.EventId, "NoExtractableClaim", notes: candidate.What, cancellationToken: cancellationToken);
-                processed++;
-                skipped++;
-                continue;
-            }
-
-            if (claim.Confidence < options.MinExtractionConfidence)
-            {
-                await consolidationStateRepository.MarkProcessedAsync(
-                    candidate.EventId,
-                    "BelowConfidenceThreshold",
-                    notes: $"confidence={claim.Confidence:F2}",
-                    cancellationToken: cancellationToken);
-                processed++;
-                skipped++;
-                continue;
-            }
-
-            var occurrenceCount = CountOccurrences(candidates, claim);
-            if (occurrenceCount < Math.Max(1, options.MinOccurrencesForPromotion))
-            {
-                await consolidationStateRepository.MarkProcessedAsync(
-                    candidate.EventId,
-                    "InsufficientOccurrences",
-                    notes: $"occurrences={occurrenceCount}",
-                    cancellationToken: cancellationToken);
-                processed++;
-                skipped++;
-                continue;
-            }
-
-            var existing = await semanticRepository.QueryClaimsAsync(
-                claim.Subject,
-                claim.Predicate,
-                SemanticClaimStatus.Active,
-                25,
+            var profile = await ResolveProfileAsync(companion.CompanionId, cancellationToken);
+            var minimumExtractionConfidence = Math.Max(
+                Math.Clamp(options.MinExtractionConfidence, 0, 1),
+                Math.Clamp(profile.Uncertainty.AnswerConfidenceThreshold * 0.75, 0, 1));
+            var candidates = await episodicRepository.QueryRangeAsync(
+                companion.CompanionId,
+                from,
+                started,
+                Math.Max(1, options.MaxCandidatesPerRun),
                 cancellationToken);
+            scanned += candidates.Count;
 
-            var duplicate = existing.Any(x => string.Equals(x.Value, claim.Value, StringComparison.OrdinalIgnoreCase));
-            if (duplicate)
+            foreach (var candidate in candidates.OrderBy(x => x.OccurredAt))
             {
-                await consolidationStateRepository.MarkProcessedAsync(candidate.EventId, "DuplicateClaim", notes: $"{claim.Subject}|{claim.Predicate}|{claim.Value}", cancellationToken: cancellationToken);
-                processed++;
-                skipped++;
-                continue;
-            }
+                cancellationToken.ThrowIfCancellationRequested();
 
-            var created = await semanticRepository.CreateClaimAsync(claim, cancellationToken);
-            await semanticRepository.AddEvidenceAsync(
-                new ClaimEvidence(
-                    Guid.NewGuid(),
+                if (await consolidationStateRepository.IsProcessedAsync(candidate.EventId, cancellationToken))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                var claim = await TryExtractClaimAsync(candidate, cancellationToken);
+                if (claim is null)
+                {
+                    await consolidationStateRepository.MarkProcessedAsync(candidate.EventId, "NoExtractableClaim", notes: candidate.What, cancellationToken: cancellationToken);
+                    processed++;
+                    skipped++;
+                    continue;
+                }
+
+                if (claim.Confidence < minimumExtractionConfidence)
+                {
+                    await consolidationStateRepository.MarkProcessedAsync(
+                        candidate.EventId,
+                        "BelowConfidenceThreshold",
+                        notes: $"confidence={claim.Confidence:F2}",
+                        cancellationToken: cancellationToken);
+                    processed++;
+                    skipped++;
+                    continue;
+                }
+
+                var occurrenceCount = CountOccurrences(candidates, claim);
+                if (occurrenceCount < Math.Max(1, options.MinOccurrencesForPromotion))
+                {
+                    await consolidationStateRepository.MarkProcessedAsync(
+                        candidate.EventId,
+                        "InsufficientOccurrences",
+                        notes: $"occurrences={occurrenceCount}",
+                        cancellationToken: cancellationToken);
+                    processed++;
+                    skipped++;
+                    continue;
+                }
+
+                var existing = await semanticRepository.QueryClaimsAsync(
+                    companion.CompanionId,
+                    claim.Subject,
+                    claim.Predicate,
+                    SemanticClaimStatus.Active,
+                    25,
+                    cancellationToken);
+
+                var duplicate = existing.Any(x => string.Equals(x.Value, claim.Value, StringComparison.OrdinalIgnoreCase));
+                if (duplicate)
+                {
+                    await consolidationStateRepository.MarkProcessedAsync(candidate.EventId, "DuplicateClaim", notes: $"{claim.Subject}|{claim.Predicate}|{claim.Value}", cancellationToken: cancellationToken);
+                    processed++;
+                    skipped++;
+                    continue;
+                }
+
+                var created = await semanticRepository.CreateClaimAsync(companion.CompanionId, claim, cancellationToken);
+                await semanticRepository.AddEvidenceAsync(
+                    companion.CompanionId,
+                    new ClaimEvidence(
+                        Guid.NewGuid(),
+                        created.ClaimId,
+                        "episodic",
+                        candidate.SourceReference,
+                        candidate.What,
+                        0.65,
+                        DateTimeOffset.UtcNow),
+                    cancellationToken);
+
+                await consolidationStateRepository.MarkProcessedAsync(
+                    candidate.EventId,
+                    "Promoted",
                     created.ClaimId,
-                    "episodic",
-                    candidate.SourceReference,
                     candidate.What,
-                    0.65,
-                    DateTimeOffset.UtcNow),
-                cancellationToken);
+                    cancellationToken);
 
-            await consolidationStateRepository.MarkProcessedAsync(
-                candidate.EventId,
-                "Promoted",
-                created.ClaimId,
-                candidate.What,
-                cancellationToken);
-
-            processed++;
-            promoted++;
+                processed++;
+                promoted++;
+            }
         }
 
         return new ConsolidationRunResult(
-            candidates.Count,
+            scanned,
             processed,
             promoted,
             skipped,
@@ -193,6 +215,19 @@ public sealed partial class ConsolidationService(
             .ToLowerInvariant()
             .Where(c => char.IsLetterOrDigit(c) || char.IsWhiteSpace(c) || c == '|')
             .ToArray());
+
+    private async Task<CompanionCognitiveProfileDocument> ResolveProfileAsync(Guid companionId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var resolved = await cognitiveProfileResolver.ResolveByCompanionIdAsync(companionId, cancellationToken);
+            return resolved.Profile;
+        }
+        catch
+        {
+            return new CompanionCognitiveProfileDocument();
+        }
+    }
 
     [GeneratedRegex("^(?<subject>[^.?!]+?)\\s+(?<predicate>is|has|likes|owns|works at|lives in)\\s+(?<value>[^.?!]+)[.?!]?$", RegexOptions.IgnoreCase | RegexOptions.Compiled)]
     private static partial Regex SemanticPattern();

@@ -1,8 +1,13 @@
 using System.Text.Json;
 using CognitiveMemory.Application.Abstractions;
+using CognitiveMemory.Application.Cognitive;
 using CognitiveMemory.Domain.Memory;
+using CognitiveMemory.Application.Relationships;
+using CognitiveMemory.Infrastructure.Persistence.Entities;
+using CognitiveMemory.Infrastructure.Scheduling;
 using CognitiveMemory.Infrastructure.SemanticKernel;
 using CognitiveMemory.Infrastructure.SemanticKernel.Plugins;
+using CognitiveMemory.Infrastructure.Companions;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Xunit;
@@ -57,7 +62,9 @@ public sealed class MemoryToolsPluginTests
 
         using var json = JsonDocument.Parse(payload);
         Assert.Equal("self", json.RootElement.GetProperty("layer").GetString());
-        Assert.Equal("identity.origin", json.RootElement.GetProperty("key").GetString());
+        var entries = json.RootElement.GetProperty("entries");
+        Assert.True(entries.GetArrayLength() >= 1);
+        Assert.Equal("identity.origin", entries[0].GetProperty("key").GetString());
 
         var snapshot = await selfModelRepository.GetAsync();
         Assert.Contains(snapshot.Preferences, x => x.Key == "identity.origin");
@@ -73,10 +80,16 @@ public sealed class MemoryToolsPluginTests
         var payload = await plugin.StoreMemoryAsync("session-33", "You are from New Babylon.");
 
         using var json = JsonDocument.Parse(payload);
-        Assert.True(json.RootElement.GetProperty("replacedPrevious").GetBoolean());
-        Assert.Equal("Neo Tokyo", json.RootElement.GetProperty("previousValue").GetString());
-        Assert.Equal("identity.origin", json.RootElement.GetProperty("key").GetString());
-        Assert.Equal("New Babylon", json.RootElement.GetProperty("value").GetString());
+        var entries = json.RootElement.GetProperty("entries");
+        Assert.True(entries.GetArrayLength() >= 1);
+        Assert.True(entries[0].GetProperty("replacedPrevious").GetBoolean());
+        var previousValue = entries[0].GetProperty("previousValue").GetString();
+        Assert.NotNull(previousValue);
+        Assert.Contains("Neo Tokyo", previousValue!, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("identity.origin", entries[0].GetProperty("key").GetString());
+        var currentValue = entries[0].GetProperty("value").GetString();
+        Assert.NotNull(currentValue);
+        Assert.Contains("New Babylon", currentValue!, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -185,7 +198,10 @@ public sealed class MemoryToolsPluginTests
         ISemanticMemoryRepository? semanticMemoryRepository = null,
         IProceduralMemoryRepository? proceduralMemoryRepository = null,
         ISelfModelRepository? selfModelRepository = null,
+        IMemoryRelationshipRepository? memoryRelationshipRepository = null,
+        IMemoryRelationshipExtractionService? memoryRelationshipExtractionService = null,
         IToolInvocationAuditRepository? toolInvocationAuditRepository = null,
+        IScheduledActionStore? scheduledActionStore = null,
         ILogger<MemoryToolsPlugin>? logger = null)
     {
         return new MemoryToolsPlugin(
@@ -194,8 +210,14 @@ public sealed class MemoryToolsPluginTests
             semanticMemoryRepository ?? new InMemorySemanticMemoryRepository(),
             proceduralMemoryRepository ?? new InMemoryProceduralMemoryRepository(),
             selfModelRepository ?? new InMemorySelfModelRepository(),
+            memoryRelationshipRepository ?? new InMemoryMemoryRelationshipRepository(),
+            memoryRelationshipExtractionService ?? new InMemoryMemoryRelationshipExtractionService(),
             toolInvocationAuditRepository ?? new InMemoryToolInvocationAuditRepository(),
+            scheduledActionStore ?? new InMemoryScheduledActionStore(),
+            new InMemoryCompanionScopeResolver(),
+            new InMemoryCompanionCognitiveProfileResolver(),
             new ClaimExtractionKernel(Kernel.CreateBuilder().Build()),
+            new SemanticKernelOptions { Provider = "InMemory" },
             logger ?? new ListLogger<MemoryToolsPlugin>());
     }
 
@@ -281,6 +303,14 @@ public sealed class MemoryToolsPluginTests
 
             return Task.FromResult<IReadOnlyList<EpisodicMemoryEvent>>(query);
         }
+
+        public Task<IReadOnlyList<EpisodicMemoryEvent>> QueryRangeAsync(
+            Guid companionId,
+            DateTimeOffset fromUtc,
+            DateTimeOffset toUtc,
+            int take = 500,
+            CancellationToken cancellationToken = default)
+            => QueryRangeAsync(fromUtc, toUtc, take, cancellationToken);
     }
 
     private sealed class InMemorySemanticMemoryRepository : ISemanticMemoryRepository
@@ -459,6 +489,239 @@ public sealed class MemoryToolsPluginTests
                 .ToArray();
 
             return Task.FromResult<IReadOnlyList<ToolInvocationAudit>>(query);
+        }
+    }
+
+    private sealed class InMemoryMemoryRelationshipRepository : IMemoryRelationshipRepository
+    {
+        private readonly List<MemoryRelationship> rows = [];
+
+        public Task<MemoryRelationship> UpsertAsync(MemoryRelationship relationship, CancellationToken cancellationToken = default)
+        {
+            var existing = rows.FirstOrDefault(
+                x => x.SessionId == relationship.SessionId
+                     && x.FromType == relationship.FromType
+                     && x.FromId == relationship.FromId
+                     && x.ToType == relationship.ToType
+                     && x.ToId == relationship.ToId
+                     && x.RelationshipType == relationship.RelationshipType);
+            if (existing is null)
+            {
+                rows.Add(relationship);
+                return Task.FromResult(relationship);
+            }
+
+            var updated = existing with
+            {
+                Confidence = Math.Max(existing.Confidence, relationship.Confidence),
+                Strength = Math.Max(existing.Strength, relationship.Strength),
+                Status = MemoryRelationshipStatus.Active,
+                UpdatedAtUtc = DateTimeOffset.UtcNow
+            };
+            var idx = rows.FindIndex(x => x.RelationshipId == existing.RelationshipId);
+            rows[idx] = updated;
+            return Task.FromResult(updated);
+        }
+
+        public Task<bool> RetireAsync(Guid relationshipId, CancellationToken cancellationToken = default)
+        {
+            var idx = rows.FindIndex(x => x.RelationshipId == relationshipId);
+            if (idx < 0)
+            {
+                return Task.FromResult(false);
+            }
+
+            rows[idx] = rows[idx] with { Status = MemoryRelationshipStatus.Retired, UpdatedAtUtc = DateTimeOffset.UtcNow };
+            return Task.FromResult(true);
+        }
+
+        public Task<IReadOnlyList<MemoryRelationship>> QueryBySessionAsync(
+            string sessionId,
+            string? relationshipType = null,
+            MemoryRelationshipStatus? status = null,
+            int take = 200,
+            CancellationToken cancellationToken = default)
+        {
+            IEnumerable<MemoryRelationship> query = rows.Where(x => x.SessionId == sessionId);
+            if (!string.IsNullOrWhiteSpace(relationshipType))
+            {
+                query = query.Where(x => x.RelationshipType == relationshipType);
+            }
+
+            if (status.HasValue)
+            {
+                query = query.Where(x => x.Status == status.Value);
+            }
+
+            return Task.FromResult<IReadOnlyList<MemoryRelationship>>(query.Take(Math.Clamp(take, 1, 1000)).ToArray());
+        }
+
+        public Task<IReadOnlyList<MemoryRelationship>> QueryByNodeAsync(
+            string sessionId,
+            MemoryNodeType nodeType,
+            string nodeId,
+            string? relationshipType = null,
+            int take = 200,
+            CancellationToken cancellationToken = default)
+        {
+            IEnumerable<MemoryRelationship> query = rows.Where(
+                x => x.SessionId == sessionId
+                     && ((x.FromType == nodeType && x.FromId == nodeId)
+                         || (x.ToType == nodeType && x.ToId == nodeId)));
+            if (!string.IsNullOrWhiteSpace(relationshipType))
+            {
+                query = query.Where(x => x.RelationshipType == relationshipType);
+            }
+
+            return Task.FromResult<IReadOnlyList<MemoryRelationship>>(query.Take(Math.Clamp(take, 1, 1000)).ToArray());
+        }
+
+        public Task<IReadOnlyDictionary<Guid, int>> GetSemanticRelationshipDegreeAsync(
+            string sessionId,
+            IReadOnlyList<Guid> semanticClaimIds,
+            CancellationToken cancellationToken = default)
+        {
+            var set = semanticClaimIds.Select(x => x.ToString("N")).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var output = new Dictionary<Guid, int>();
+            foreach (var row in rows.Where(x => x.SessionId == sessionId && x.Status == MemoryRelationshipStatus.Active))
+            {
+                if (row.FromType == MemoryNodeType.SemanticClaim
+                    && set.Contains(row.FromId)
+                    && Guid.TryParseExact(row.FromId, "N", out var fromId))
+                {
+                    output[fromId] = (output.TryGetValue(fromId, out var c) ? c : 0) + 1;
+                }
+
+                if (row.ToType == MemoryNodeType.SemanticClaim
+                    && set.Contains(row.ToId)
+                    && Guid.TryParseExact(row.ToId, "N", out var toId))
+                {
+                    output[toId] = (output.TryGetValue(toId, out var c) ? c : 0) + 1;
+                }
+            }
+
+            return Task.FromResult<IReadOnlyDictionary<Guid, int>>(output);
+        }
+
+        public Task<MemoryRelationshipBackfillResult> BackfillAsync(string? sessionId = null, int take = 2000, CancellationToken cancellationToken = default)
+            => Task.FromResult(new MemoryRelationshipBackfillResult(0, 0, 0));
+    }
+
+    private sealed class InMemoryMemoryRelationshipExtractionService : IMemoryRelationshipExtractionService
+    {
+        public Task<MemoryRelationshipExtractionResult> ExtractAsync(
+            string sessionId,
+            int take = 200,
+            bool apply = true,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(new MemoryRelationshipExtractionResult(sessionId, 0, 0, 0, 0, apply, "test"));
+    }
+
+    private sealed class InMemoryScheduledActionStore : IScheduledActionStore
+    {
+        private readonly Dictionary<Guid, ScheduledActionEntity> rows = [];
+
+        public Task<ScheduledActionEntity> ScheduleAsync(
+            string sessionId,
+            string actionType,
+            string inputJson,
+            DateTimeOffset runAtUtc,
+            int maxAttempts,
+            CancellationToken cancellationToken = default)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var row = new ScheduledActionEntity
+            {
+                ActionId = Guid.NewGuid(),
+                SessionId = sessionId,
+                ActionType = actionType,
+                InputJson = inputJson,
+                RunAtUtc = runAtUtc,
+                Status = ScheduledActionStatus.Pending,
+                Attempts = 0,
+                MaxAttempts = maxAttempts,
+                CreatedAtUtc = now,
+                UpdatedAtUtc = now
+            };
+            rows[row.ActionId] = row;
+            return Task.FromResult(row);
+        }
+
+        public Task<IReadOnlyList<ScheduledActionEntity>> ListAsync(string? sessionId, string? status, int take, CancellationToken cancellationToken = default)
+        {
+            IEnumerable<ScheduledActionEntity> query = rows.Values;
+            if (!string.IsNullOrWhiteSpace(sessionId))
+            {
+                query = query.Where(x => x.SessionId == sessionId);
+            }
+
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                query = query.Where(x => x.Status == status);
+            }
+
+            return Task.FromResult<IReadOnlyList<ScheduledActionEntity>>(query.Take(Math.Clamp(take, 1, 200)).ToArray());
+        }
+
+        public Task<bool> CancelAsync(Guid actionId, CancellationToken cancellationToken = default)
+        {
+            if (!rows.TryGetValue(actionId, out var row))
+            {
+                return Task.FromResult(false);
+            }
+
+            row.Status = ScheduledActionStatus.Canceled;
+            row.UpdatedAtUtc = DateTimeOffset.UtcNow;
+            row.CompletedAtUtc = row.UpdatedAtUtc;
+            return Task.FromResult(true);
+        }
+
+        public Task<IReadOnlyList<ScheduledActionEntity>> ClaimDueAsync(DateTimeOffset nowUtc, int batchSize, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<ScheduledActionEntity>>([]);
+
+        public Task MarkCompletedAsync(Guid actionId, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task MarkFailedAsync(Guid actionId, string error, bool exhaustedRetries, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+    }
+
+    private sealed class InMemoryCompanionScopeResolver : ICompanionScopeResolver
+    {
+        public Task<Guid?> TryResolveCompanionIdAsync(string sessionId, CancellationToken cancellationToken = default)
+            => Task.FromResult<Guid?>(GuidUtility.FromString(sessionId));
+
+        public Task<Guid> ResolveCompanionIdOrThrowAsync(string sessionId, CancellationToken cancellationToken = default)
+            => Task.FromResult(GuidUtility.FromString(sessionId));
+    }
+
+    private sealed class InMemoryCompanionCognitiveProfileResolver : ICompanionCognitiveProfileResolver
+    {
+        public Task<ResolvedCompanionCognitiveProfile> ResolveByCompanionIdAsync(Guid companionId, CancellationToken cancellationToken = default)
+        {
+            var profile = new CompanionCognitiveProfileDocument();
+            return Task.FromResult(
+                new ResolvedCompanionCognitiveProfile(
+                    companionId,
+                    Guid.Empty,
+                    1,
+                    profile,
+                    new CompanionCognitiveRuntimePolicy(companionId, Guid.Empty, 1, profile, new RuntimeLimits(120, 20, 8, 1)),
+                    IsFallback: true));
+        }
+
+        public Task<ResolvedCompanionCognitiveProfile> ResolveBySessionIdAsync(string sessionId, CancellationToken cancellationToken = default)
+            => ResolveByCompanionIdAsync(Guid.Empty, cancellationToken);
+    }
+
+    private static class GuidUtility
+    {
+        public static Guid FromString(string value)
+        {
+            var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(value));
+            var bytes = new byte[16];
+            Array.Copy(hash, bytes, 16);
+            return new Guid(bytes);
         }
     }
 

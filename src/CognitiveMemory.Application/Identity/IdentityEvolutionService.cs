@@ -1,4 +1,5 @@
 using CognitiveMemory.Application.Abstractions;
+using CognitiveMemory.Application.Cognitive;
 using CognitiveMemory.Domain.Memory;
 
 namespace CognitiveMemory.Application.Identity;
@@ -8,52 +9,80 @@ public sealed class IdentityEvolutionService(
     ISemanticMemoryRepository semanticRepository,
     IProceduralMemoryRepository proceduralRepository,
     ISelfModelRepository selfModelRepository,
+    ICompanionDirectory companionDirectory,
+    ICompanionCognitiveProfileResolver cognitiveProfileResolver,
     IdentityEvolutionOptions options) : IIdentityEvolutionService
 {
     public async Task<IdentityEvolutionRunResult> RunOnceAsync(CancellationToken cancellationToken = default)
     {
         var startedAtUtc = DateTimeOffset.UtcNow;
         var now = DateTimeOffset.UtcNow;
+        var companions = await companionDirectory.ListActiveAsync(cancellationToken);
 
-        var episodes = await episodicRepository.QueryRangeAsync(
-            now.AddDays(-Math.Max(1, options.LookbackDays)),
-            now,
-            Math.Clamp(options.MaxEpisodesScanned, 50, 4000),
-            cancellationToken);
-
-        var activeClaims = await semanticRepository.QueryClaimsAsync(
-            status: SemanticClaimStatus.Active,
-            take: 500,
-            cancellationToken: cancellationToken);
-
-        var recentRoutines = await proceduralRepository.QueryRecentAsync(50, cancellationToken);
-        var snapshot = await selfModelRepository.GetAsync(cancellationToken);
-        var current = snapshot.Preferences.ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
-
+        var episodesScanned = 0;
+        var claimsScanned = 0;
+        var routinesScanned = 0;
         var updatedKeys = new List<string>();
 
-        var focus = InferProjectFocus(episodes, options.MinSignalOccurrences);
-        if (focus is not null)
+        foreach (var companion in companions)
         {
-            await SetIfChangedAsync(options.FocusPreferenceKey, focus, current, updatedKeys, cancellationToken);
-        }
+            cancellationToken.ThrowIfCancellationRequested();
 
-        var style = InferCollaborationStyle(episodes, options.MinSignalOccurrences);
-        if (style is not null)
-        {
-            await SetIfChangedAsync(options.StylePreferenceKey, style, current, updatedKeys, cancellationToken);
-        }
+            var profile = await ResolveProfileAsync(companion.CompanionId, cancellationToken);
+            var episodes = await episodicRepository.QueryRangeAsync(
+                companion.CompanionId,
+                now.AddDays(-Math.Max(1, options.LookbackDays)),
+                now,
+                Math.Clamp(options.MaxEpisodesScanned, 50, 4000),
+                cancellationToken);
+            episodesScanned += episodes.Count;
 
-        var longTermGoal = InferLongTermGoal(activeClaims, recentRoutines);
-        if (longTermGoal is not null)
-        {
-            await SetIfChangedAsync(options.GoalPreferenceKey, longTermGoal, current, updatedKeys, cancellationToken);
+            var activeClaims = await semanticRepository.QueryClaimsAsync(
+                companion.CompanionId,
+                status: SemanticClaimStatus.Active,
+                take: 500,
+                cancellationToken: cancellationToken);
+            claimsScanned += activeClaims.Count;
+
+            var recentRoutines = await proceduralRepository.QueryRecentAsync(companion.CompanionId, 50, cancellationToken);
+            routinesScanned += recentRoutines.Count;
+            var snapshot = await selfModelRepository.GetAsync(companion.CompanionId, cancellationToken);
+            var current = snapshot.Preferences.ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+
+            var focus = InferProjectFocus(episodes, options.MinSignalOccurrences);
+            if (focus is not null)
+            {
+                await SetIfChangedAsync(companion.CompanionId, options.FocusPreferenceKey, focus, current, updatedKeys, cancellationToken);
+            }
+
+            var style = InferCollaborationStyle(episodes, options.MinSignalOccurrences);
+            if (style is not null)
+            {
+                await SetIfChangedAsync(companion.CompanionId, options.StylePreferenceKey, style, current, updatedKeys, cancellationToken);
+            }
+
+            var longTermGoal = InferLongTermGoal(activeClaims, recentRoutines);
+            if (longTermGoal is not null)
+            {
+                await SetIfChangedAsync(companion.CompanionId, options.GoalPreferenceKey, longTermGoal, current, updatedKeys, cancellationToken);
+            }
+
+            if (profile.Expression.ToneStyle.Contains("coach", StringComparison.OrdinalIgnoreCase))
+            {
+                await SetIfChangedAsync(
+                    companion.CompanionId,
+                    "identity.communication_style",
+                    "coaching",
+                    current,
+                    updatedKeys,
+                    cancellationToken);
+            }
         }
 
         return new IdentityEvolutionRunResult(
-            episodes.Count,
-            activeClaims.Count,
-            recentRoutines.Count,
+            episodesScanned,
+            claimsScanned,
+            routinesScanned,
             updatedKeys.Count,
             updatedKeys,
             startedAtUtc,
@@ -61,6 +90,7 @@ public sealed class IdentityEvolutionService(
     }
 
     private async Task SetIfChangedAsync(
+        Guid companionId,
         string key,
         string value,
         IReadOnlyDictionary<string, string> current,
@@ -73,8 +103,8 @@ public sealed class IdentityEvolutionService(
             return;
         }
 
-        await selfModelRepository.SetPreferenceAsync(key, value, cancellationToken);
-        updatedKeys.Add(key);
+        await selfModelRepository.SetPreferenceAsync(companionId, key, value, cancellationToken);
+        updatedKeys.Add($"{companionId:N}:{key}");
     }
 
     private static string? InferProjectFocus(IReadOnlyList<EpisodicMemoryEvent> episodes, int minOccurrences)
@@ -169,6 +199,18 @@ public sealed class IdentityEvolutionService(
                 .ToArray());
 
         return normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+    }
+
+    private async Task<CompanionCognitiveProfileDocument> ResolveProfileAsync(Guid companionId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return (await cognitiveProfileResolver.ResolveByCompanionIdAsync(companionId, cancellationToken)).Profile;
+        }
+        catch
+        {
+            return new CompanionCognitiveProfileDocument();
+        }
     }
 
     private static readonly HashSet<string> StopWords =

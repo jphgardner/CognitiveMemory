@@ -1,4 +1,6 @@
 using CognitiveMemory.Application.Episodic;
+using CognitiveMemory.Api.Security;
+using CognitiveMemory.Infrastructure.Persistence;
 
 namespace CognitiveMemory.Api.Endpoints;
 
@@ -6,13 +8,21 @@ public static class EpisodicMemoryEndpoints
 {
     public static IEndpointRouteBuilder MapEpisodicMemoryEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        endpoints.MapPost(
-                "/api/episodic/events",
-                async (AppendEpisodicEventDto request, IEpisodicMemoryService service, CancellationToken cancellationToken) =>
+        var group = endpoints.MapGroup("/api/episodic").WithTags("Episodic").RequireAuthorization();
+
+        group.MapPost(
+                "/events",
+                async (HttpContext httpContext, AppendEpisodicEventDto request, IEpisodicMemoryService service, MemoryDbContext dbContext, CompanionOwnershipService ownershipService, CancellationToken cancellationToken) =>
                 {
+                    var companion = await ownershipService.ResolveOwnedCompanionAsync(httpContext.User, request.CompanionId, dbContext, cancellationToken);
+                    if (companion is null)
+                    {
+                        return Results.NotFound();
+                    }
+
                     var created = await service.AppendAsync(
                         new AppendEpisodicMemoryRequest(
-                            request.SessionId,
+                            companion.SessionId,
                             request.Who,
                             request.What,
                             request.Context,
@@ -25,16 +35,31 @@ public static class EpisodicMemoryEndpoints
             .WithName("AppendEpisodicEvent")
             .WithTags("Episodic");
 
-        endpoints.MapGet(
-                "/api/episodic/events/{sessionId}",
+        group.MapGet(
+                "/events/{sessionId}",
                 async (
+                    HttpContext httpContext,
+                    Guid companionId,
                     string sessionId,
                     DateTimeOffset? fromUtc,
                     DateTimeOffset? toUtc,
                     int? take,
                     IEpisodicMemoryService service,
+                    MemoryDbContext dbContext,
+                    CompanionOwnershipService ownershipService,
                     CancellationToken cancellationToken) =>
                 {
+                    var companion = await ownershipService.ResolveOwnedCompanionAsync(httpContext.User, companionId, dbContext, cancellationToken);
+                    if (companion is null)
+                    {
+                        return Results.NotFound();
+                    }
+
+                    if (!string.Equals(companion.SessionId, sessionId, StringComparison.Ordinal))
+                    {
+                        return Results.BadRequest(new { error = "sessionId does not match companion scope." });
+                    }
+
                     var events = await service.QueryBySessionAsync(
                         sessionId,
                         fromUtc,
@@ -62,7 +87,7 @@ public static class EpisodicMemoryEndpoints
 }
 
 public sealed record AppendEpisodicEventDto(
-    string SessionId,
+    Guid CompanionId,
     string Who,
     string What,
     string Context,

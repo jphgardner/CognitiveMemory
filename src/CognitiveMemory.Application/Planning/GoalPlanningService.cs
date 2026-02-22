@@ -83,28 +83,9 @@ public sealed class GoalPlanningService(
         var sessionId = request.SessionId.Trim();
         var goal = request.Goal.Trim();
 
-        var context = JsonSerializer.Serialize(
-            new
-            {
-                planId = request.PlanId,
-                succeeded = request.Succeeded,
-                executedSteps = request.ExecutedSteps,
-                outcome = request.OutcomeSummary
-            });
-
-        await episodicRepository.AppendAsync(
-            new EpisodicMemoryEvent(
-                Guid.NewGuid(),
-                sessionId,
-                "planner",
-                $"Plan outcome recorded: {goal}",
-                now,
-                context,
-                "api:planning:outcome"),
-            cancellationToken);
-
         Guid? routineId = null;
         var updatedProceduralMemory = false;
+        string? resolvedTrigger = null;
 
         if (request.Succeeded
             && options.AutoUpdateProceduralMemoryOnSuccess
@@ -113,6 +94,7 @@ public sealed class GoalPlanningService(
             var trigger = string.IsNullOrWhiteSpace(request.Trigger)
                 ? InferTrigger(goal)
                 : request.Trigger.Trim().ToLowerInvariant();
+            resolvedTrigger = trigger;
 
             var existing = await proceduralRepository.QueryByTriggerAsync(trigger, 1, cancellationToken);
             var existingRoutine = existing.FirstOrDefault();
@@ -137,6 +119,28 @@ public sealed class GoalPlanningService(
             routineId = saved.RoutineId;
             updatedProceduralMemory = true;
         }
+
+        var context = JsonSerializer.Serialize(
+            new
+            {
+                planId = request.PlanId,
+                succeeded = request.Succeeded,
+                executedSteps = request.ExecutedSteps,
+                outcome = request.OutcomeSummary,
+                routineId,
+                trigger = resolvedTrigger
+            });
+
+        await episodicRepository.AppendAsync(
+            new EpisodicMemoryEvent(
+                Guid.NewGuid(),
+                sessionId,
+                "planner",
+                $"Plan outcome recorded: {goal}",
+                now,
+                context,
+                "api:planning:outcome"),
+            cancellationToken);
 
         return new RecordGoalOutcomeResult(request.PlanId, routineId, updatedProceduralMemory, now);
     }

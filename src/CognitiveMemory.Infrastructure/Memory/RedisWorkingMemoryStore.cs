@@ -1,12 +1,14 @@
 using System.Text.Json;
 using CognitiveMemory.Application.Abstractions;
+using CognitiveMemory.Infrastructure.Companions;
 using StackExchange.Redis;
 
 namespace CognitiveMemory.Infrastructure.Memory;
 
 public sealed class RedisWorkingMemoryStore(
     IConnectionMultiplexer connectionMultiplexer,
-    WorkingMemoryOptions options) : IWorkingMemoryStore
+    WorkingMemoryOptions options,
+    ICompanionScopeResolver companionScopeResolver) : IWorkingMemoryStore
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
@@ -15,7 +17,7 @@ public sealed class RedisWorkingMemoryStore(
         cancellationToken.ThrowIfCancellationRequested();
 
         var db = connectionMultiplexer.GetDatabase();
-        var key = GetKey(sessionId);
+        var key = await GetKeyAsync(sessionId, cancellationToken);
         var payload = await db.StringGetAsync(key);
 
         if (!payload.HasValue)
@@ -32,7 +34,7 @@ public sealed class RedisWorkingMemoryStore(
         cancellationToken.ThrowIfCancellationRequested();
 
         var db = connectionMultiplexer.GetDatabase();
-        var key = GetKey(context.SessionId);
+        var key = await GetKeyAsync(context.SessionId, cancellationToken);
         var payload = JsonSerializer.Serialize(context, SerializerOptions);
 
         await db.StringSetAsync(
@@ -41,5 +43,9 @@ public sealed class RedisWorkingMemoryStore(
             TimeSpan.FromSeconds(Math.Max(1, options.TtlSeconds)));
     }
 
-    private string GetKey(string sessionId) => $"{options.KeyPrefix}{sessionId}";
+    private async Task<string> GetKeyAsync(string sessionId, CancellationToken cancellationToken)
+    {
+        var companionId = await companionScopeResolver.ResolveCompanionIdOrThrowAsync(sessionId, cancellationToken);
+        return $"{options.KeyPrefix}comp:{companionId:N}:session:{sessionId}";
+    }
 }

@@ -3,6 +3,7 @@ namespace CognitiveMemory.Infrastructure.Persistence.Entities;
 public sealed class SemanticClaimEntity
 {
     public Guid ClaimId { get; set; }
+    public Guid CompanionId { get; set; }
     public string Subject { get; set; } = string.Empty;
     public string Predicate { get; set; } = string.Empty;
     public string Value { get; set; } = string.Empty;

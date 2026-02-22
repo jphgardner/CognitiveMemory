@@ -1,11 +1,19 @@
 using System.ComponentModel;
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Globalization;
 using CognitiveMemory.Application.Abstractions;
+using CognitiveMemory.Application.Cognitive;
 using CognitiveMemory.Domain.Memory;
+using CognitiveMemory.Infrastructure.Companions;
+using CognitiveMemory.Infrastructure.Scheduling;
 using CognitiveMemory.Infrastructure.SemanticKernel;
+using CognitiveMemory.Application.Relationships;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
+using Microsoft.SemanticKernel.Connectors.Ollama;
+using Microsoft.SemanticKernel.Connectors.OpenAI;
 
 namespace CognitiveMemory.Infrastructure.SemanticKernel.Plugins;
 
@@ -15,13 +23,28 @@ public sealed class MemoryToolsPlugin(
     ISemanticMemoryRepository semanticMemoryRepository,
     IProceduralMemoryRepository proceduralMemoryRepository,
     ISelfModelRepository selfModelRepository,
+    IMemoryRelationshipRepository memoryRelationshipRepository,
+    IMemoryRelationshipExtractionService memoryRelationshipExtractionService,
     IToolInvocationAuditRepository toolInvocationAuditRepository,
+    IScheduledActionStore scheduledActionStore,
+    ICompanionScopeResolver companionScopeResolver,
+    ICompanionCognitiveProfileResolver cognitiveProfileResolver,
     ClaimExtractionKernel routingKernel,
+    SemanticKernelOptions semanticKernelOptions,
     ILogger<MemoryToolsPlugin> logger)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private const string ToolStoreMemory = "store_memory";
     private const string ToolRetrieveMemory = "retrieve_memory";
+    private const string ToolGetCurrentTime = "get_current_time";
+    private const string ToolScheduleAction = "schedule_action";
+    private const string ToolListScheduledActions = "list_scheduled_actions";
+    private const string ToolCancelScheduledAction = "cancel_scheduled_action";
+    private const string ToolCreateMemoryRelationship = "create_memory_relationship";
+    private const string ToolGetMemoryRelationships = "get_memory_relationships";
+    private const string ToolBackfillMemoryRelationships = "backfill_memory_relationships";
+    private const string ToolExtractMemoryRelationships = "extract_memory_relationships";
+    private const string RoutingPluginName = "MemoryToolsRoutingReadOnly";
     private const int MaxRequestCacheEntries = 128;
 
     private readonly ConcurrentDictionary<string, Lazy<Task<LayerCandidateBatch>>> layerCandidateCache = new(StringComparer.Ordinal);
@@ -45,17 +68,60 @@ public sealed class MemoryToolsPlugin(
             new { sessionId = normalizedSessionId, memoryText = normalizedText, hint = normalizedHint },
             async () =>
             {
-                var route = await ResolveStoreRouteAsync(normalizedSessionId, normalizedText, normalizedHint, cancellationToken);
-                var layer = NormalizeLayer(route.Layer) ?? InferStoreLayerHeuristically(normalizedText);
+                var cognitiveProfile = await ResolveCognitiveProfileAsync(normalizedSessionId, cancellationToken);
+                var writeConfidenceThreshold = Math.Clamp(cognitiveProfile.Profile.Memory.WriteThresholds.ConfidenceMin, 0, 1);
+                var routes = (await ResolveStoreRoutesAsync(normalizedSessionId, normalizedText, normalizedHint, cancellationToken))
+                    .Where(
+                        route =>
+                        {
+                            var routeLayer = NormalizeLayer(route.Layer) ?? "working";
+                            if (routeLayer == "working")
+                            {
+                                return true;
+                            }
 
-                return layer switch
+                            var confidence = Math.Clamp(route.Confidence ?? 0.7, 0, 1);
+                            return confidence >= writeConfidenceThreshold;
+                        })
+                    .ToArray();
+                if (routes.Length == 0)
                 {
-                    "self" => await StoreSelfModelAsync(normalizedText, route, cancellationToken),
-                    "semantic" => await StoreSemanticAsync(normalizedSessionId, normalizedText, route, cancellationToken),
-                    "episodic" => await StoreEpisodicAsync(normalizedSessionId, normalizedText, route, cancellationToken),
-                    "procedural" => await StoreProceduralAsync(normalizedText, route, cancellationToken),
-                    _ => await StoreWorkingAsync(normalizedSessionId, normalizedText, route, cancellationToken)
-                };
+                    return JsonSerializer.Serialize(
+                        new
+                        {
+                            layer = "none",
+                            stored = false,
+                            reason = "below_write_confidence_threshold",
+                            threshold = writeConfidenceThreshold
+                        },
+                        JsonOptions);
+                }
+
+                logger.LogInformation(
+                    "store_memory resolved routes. SessionId={SessionId} Count={Count} Layers={Layers}",
+                    normalizedSessionId,
+                    routes.Length,
+                    string.Join(",", routes.Select(x => NormalizeLayer(x.Layer) ?? "unknown")));
+                if (routes.Length == 1)
+                {
+                    return await PersistStoreRouteAsync(normalizedSessionId, normalizedText, routes[0], cancellationToken);
+                }
+
+                var results = new List<object?>(routes.Length);
+                foreach (var route in routes)
+                {
+                    var resultJson = await PersistStoreRouteAsync(normalizedSessionId, normalizedText, route, cancellationToken);
+                    results.Add(ParseJsonOrString(resultJson));
+                }
+
+                return JsonSerializer.Serialize(
+                    new
+                    {
+                        layer = "multi",
+                        count = results.Count,
+                        results
+                    },
+                    JsonOptions);
             },
             cancellationToken);
     }
@@ -80,21 +146,38 @@ public sealed class MemoryToolsPlugin(
             new { sessionId = normalizedSessionId, query = normalizedQuery, take = normalizedTake, layer = normalizedLayer },
             async () =>
             {
-                var queryProfile = BuildQueryProfile(normalizedQuery, normalizedTake);
-                var selectedLayers = (await ResolveRetrieveLayersAsync(queryProfile.RawQuery, normalizedLayer, cancellationToken))
+                var cognitiveProfile = await ResolveCognitiveProfileAsync(normalizedSessionId, cancellationToken);
+                var effectiveTake = Math.Clamp(normalizedTake, 1, Math.Clamp(cognitiveProfile.RuntimePolicy.Limits.MaxRetrieveResults, 1, 100));
+                var queryProfile = BuildQueryProfile(normalizedQuery, effectiveTake);
+                var selectedLayers = (await ResolveRetrieveLayersAsync(queryProfile.RawQuery, normalizedLayer, cognitiveProfile.Profile, cancellationToken))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToArray();
                 var startedAt = DateTimeOffset.UtcNow;
 
-                var layerTasks = selectedLayers
-                    .Select(layerName => RetrieveLayerCandidatesAsync(layerName, normalizedSessionId, queryProfile, cancellationToken))
-                    .ToArray();
-                var layerBatches = await Task.WhenAll(layerTasks);
+                // Repositories share a scoped DbContext; execute layer retrieval serially to avoid overlapping EF operations.
+                var layerBatches = new List<LayerCandidateBatch>(selectedLayers.Length);
+                foreach (var layerName in selectedLayers)
+                {
+                    var batch = await RetrieveLayerCandidatesAsync(layerName, normalizedSessionId, queryProfile, cancellationToken);
+                    layerBatches.Add(batch);
+                }
                 var candidates = layerBatches
                     .SelectMany(x => x.Candidates)
                     .ToArray();
-                var ranked = DeduplicateRankedCandidates(RankCandidates(candidates, queryProfile))
-                    .Take(Math.Max(queryProfile.Take * selectedLayers.Length, queryProfile.Take))
+                var semanticClaimIds = candidates
+                    .Select(x => x.Payload)
+                    .OfType<SemanticClaim>()
+                    .Select(x => x.ClaimId)
+                    .Distinct()
+                    .ToArray();
+                var semanticRelationshipDegree = await memoryRelationshipRepository.GetSemanticRelationshipDegreeAsync(
+                    normalizedSessionId,
+                    semanticClaimIds,
+                    cancellationToken);
+                var ranked = DeduplicateRankedCandidates(RankCandidates(candidates, queryProfile, semanticRelationshipDegree, cognitiveProfile.Profile))
+                    .Take(Math.Min(
+                        Math.Clamp(cognitiveProfile.RuntimePolicy.Limits.MaxRetrieveCandidates, 10, 400),
+                        Math.Max(queryProfile.Take * selectedLayers.Length, queryProfile.Take)))
                     .ToArray();
                 var results = BuildLayerResults(selectedLayers, ranked, queryProfile.Take);
                 var insights = BuildInsights(queryProfile, ranked);
@@ -136,11 +219,333 @@ public sealed class MemoryToolsPlugin(
                     {
                         candidateCount = candidates.Length,
                         rankedCount = ranked.Length,
-                        elapsedMs
+                        elapsedMs,
+                        profileVersionId = cognitiveProfile.ProfileVersionId
                     }
                 };
 
                 return JsonSerializer.Serialize(payload, JsonOptions);
+            },
+            cancellationToken);
+    }
+
+    [KernelFunction(ToolGetCurrentTime)]
+    [Description("Get current time details. Optionally provide a UTC offset like +02:00 or -05:00.")]
+    public async Task<string> GetCurrentTimeAsync(
+        [Description("Optional UTC offset in format +/-HH:mm")] string? utcOffset = null,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedOffset = string.IsNullOrWhiteSpace(utcOffset) ? null : utcOffset.Trim();
+        return await ExecuteAsync(
+            ToolGetCurrentTime,
+            isWrite: false,
+            new { utcOffset = normalizedOffset },
+            () =>
+            {
+                var nowUtc = DateTimeOffset.UtcNow;
+                var payload = new Dictionary<string, object?>
+                {
+                    ["utc"] = nowUtc.ToString("O", CultureInfo.InvariantCulture),
+                    ["local"] = nowUtc.ToLocalTime().ToString("O", CultureInfo.InvariantCulture),
+                    ["unixTimeSeconds"] = nowUtc.ToUnixTimeSeconds(),
+                    ["unixTimeMilliseconds"] = nowUtc.ToUnixTimeMilliseconds(),
+                    ["localTimeZone"] = TimeZoneInfo.Local.Id
+                };
+
+                if (TryParseUtcOffset(normalizedOffset, out var offset))
+                {
+                    payload["requestedUtcOffset"] = normalizedOffset;
+                    payload["atRequestedOffset"] = nowUtc.ToOffset(offset).ToString("O", CultureInfo.InvariantCulture);
+                }
+                else if (!string.IsNullOrWhiteSpace(normalizedOffset))
+                {
+                    payload["requestedUtcOffset"] = normalizedOffset;
+                    payload["warning"] = "Invalid utcOffset format. Expected +/-HH:mm.";
+                }
+
+                return Task.FromResult(JsonSerializer.Serialize(payload, JsonOptions));
+            },
+            cancellationToken);
+    }
+
+    [KernelFunction(ToolScheduleAction)]
+    [Description("Schedule an action for a specific UTC datetime with JSON inputs. Supported actionType values: append_episodic, queue_subconscious_debate, store_memory, execute_procedural_trigger, invoke_webhook.")]
+    public async Task<string> ScheduleActionAsync(
+        [Description("Session id")] string sessionId,
+        [Description("Action type to execute later")] string actionType,
+        [Description("Run time in UTC ISO-8601 format, e.g. 2026-02-22T12:30:00Z")] string runAtUtc,
+        [Description("JSON object string with action inputs")] string? inputJson = null,
+        [Description("Optional max retries before failing")] int maxAttempts = 3,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedSessionId = RequireNonEmpty(sessionId, nameof(sessionId));
+        var normalizedActionType = RequireNonEmpty(actionType, nameof(actionType));
+        if (!DateTimeOffset.TryParse(runAtUtc, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsedRunAt))
+        {
+            throw new ArgumentException("runAtUtc must be a valid UTC datetime.");
+        }
+
+        var normalizedInput = string.IsNullOrWhiteSpace(inputJson) ? "{}" : inputJson.Trim();
+        _ = JsonDocument.Parse(normalizedInput);
+        return await ExecuteAsync(
+            ToolScheduleAction,
+            isWrite: true,
+            new { sessionId = normalizedSessionId, actionType = normalizedActionType, runAtUtc = parsedRunAt, inputJson = normalizedInput, maxAttempts },
+            async () =>
+            {
+                var created = await scheduledActionStore.ScheduleAsync(
+                    normalizedSessionId,
+                    normalizedActionType,
+                    normalizedInput,
+                    parsedRunAt,
+                    Math.Clamp(maxAttempts, 1, 20),
+                    cancellationToken);
+                return JsonSerializer.Serialize(
+                    new
+                    {
+                        scheduled = true,
+                        actionId = created.ActionId,
+                        created.SessionId,
+                        created.ActionType,
+                        created.RunAtUtc,
+                        created.Status,
+                        created.MaxAttempts
+                    },
+                    JsonOptions);
+            },
+            cancellationToken);
+    }
+
+    [KernelFunction(ToolListScheduledActions)]
+    [Description("List scheduled actions for a session.")]
+    public async Task<string> ListScheduledActionsAsync(
+        [Description("Session id")] string sessionId,
+        [Description("Optional status filter: Pending|Running|Completed|Failed|Canceled")] string? status = null,
+        [Description("Maximum number of rows")] int take = 50,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedSessionId = RequireNonEmpty(sessionId, nameof(sessionId));
+        var normalizedStatus = string.IsNullOrWhiteSpace(status) ? null : status.Trim();
+        return await ExecuteAsync(
+            ToolListScheduledActions,
+            isWrite: false,
+            new { sessionId = normalizedSessionId, status = normalizedStatus, take },
+            async () =>
+            {
+                var rows = await scheduledActionStore.ListAsync(
+                    normalizedSessionId,
+                    normalizedStatus,
+                    Math.Clamp(take, 1, 200),
+                    cancellationToken);
+                return JsonSerializer.Serialize(
+                    new
+                    {
+                        sessionId = normalizedSessionId,
+                        count = rows.Count,
+                        actions = rows.Select(
+                            x => new
+                            {
+                                x.ActionId,
+                                x.ActionType,
+                                x.RunAtUtc,
+                                x.Status,
+                                x.Attempts,
+                                x.MaxAttempts,
+                                x.LastError,
+                                x.CreatedAtUtc,
+                                x.UpdatedAtUtc,
+                                x.CompletedAtUtc
+                            })
+                    },
+                    JsonOptions);
+            },
+            cancellationToken);
+    }
+
+    [KernelFunction(ToolCancelScheduledAction)]
+    [Description("Cancel a scheduled action by actionId.")]
+    public async Task<string> CancelScheduledActionAsync(
+        [Description("Scheduled action id")] string actionId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Guid.TryParse(actionId?.Trim(), out var parsedActionId))
+        {
+            throw new ArgumentException("actionId must be a valid GUID.");
+        }
+
+        return await ExecuteAsync(
+            ToolCancelScheduledAction,
+            isWrite: true,
+            new { actionId = parsedActionId },
+            async () =>
+            {
+                var canceled = await scheduledActionStore.CancelAsync(parsedActionId, cancellationToken);
+                return JsonSerializer.Serialize(new { actionId = parsedActionId, canceled }, JsonOptions);
+            },
+            cancellationToken);
+    }
+
+    [KernelFunction(ToolCreateMemoryRelationship)]
+    [Description("Create or update a relationship edge between two memory nodes.")]
+    public async Task<string> CreateMemoryRelationshipAsync(
+        [Description("Session id")] string sessionId,
+        [Description("From node type: SemanticClaim|EpisodicEvent|ProceduralRoutine|SelfPreference|ScheduledAction|SubconsciousDebate|ToolInvocation")] string fromType,
+        [Description("From node id")] string fromId,
+        [Description("To node type: SemanticClaim|EpisodicEvent|ProceduralRoutine|SelfPreference|ScheduledAction|SubconsciousDebate|ToolInvocation")] string toType,
+        [Description("To node id")] string toId,
+        [Description("Relationship type, e.g. supports, contradicts, superseded_by, about")] string relationshipType,
+        [Description("Confidence in [0,1]")] double confidence = 0.7,
+        [Description("Strength in [0,1]")] double strength = 0.7,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedSessionId = RequireNonEmpty(sessionId, nameof(sessionId));
+        var normalizedFromId = RequireNonEmpty(fromId, nameof(fromId));
+        var normalizedToId = RequireNonEmpty(toId, nameof(toId));
+        var normalizedRelationshipType = RequireNonEmpty(relationshipType, nameof(relationshipType)).ToLowerInvariant();
+        if (!Enum.TryParse<MemoryNodeType>(fromType?.Trim(), true, out var parsedFromType))
+        {
+            throw new ArgumentException("fromType is invalid.");
+        }
+
+        if (!Enum.TryParse<MemoryNodeType>(toType?.Trim(), true, out var parsedToType))
+        {
+            throw new ArgumentException("toType is invalid.");
+        }
+
+        return await ExecuteAsync(
+            ToolCreateMemoryRelationship,
+            isWrite: true,
+            new
+            {
+                sessionId = normalizedSessionId,
+                fromType = parsedFromType,
+                fromId = normalizedFromId,
+                toType = parsedToType,
+                toId = normalizedToId,
+                relationshipType = normalizedRelationshipType,
+                confidence,
+                strength
+            },
+            async () =>
+            {
+                var created = await memoryRelationshipRepository.UpsertAsync(
+                    new MemoryRelationship(
+                        Guid.NewGuid(),
+                        normalizedSessionId,
+                        parsedFromType,
+                        normalizedFromId,
+                        parsedToType,
+                        normalizedToId,
+                        normalizedRelationshipType,
+                        Math.Clamp(confidence, 0, 1),
+                        Math.Clamp(strength, 0, 1),
+                        MemoryRelationshipStatus.Active,
+                        null,
+                        null,
+                        null,
+                        DateTimeOffset.UtcNow,
+                        DateTimeOffset.UtcNow),
+                    cancellationToken);
+
+                return JsonSerializer.Serialize(created, JsonOptions);
+            },
+            cancellationToken);
+    }
+
+    [KernelFunction(ToolGetMemoryRelationships)]
+    [Description("Get memory relationships for a session, optionally filtered by node and type.")]
+    public async Task<string> GetMemoryRelationshipsAsync(
+        [Description("Session id")] string sessionId,
+        [Description("Optional node type")] string? nodeType = null,
+        [Description("Optional node id")] string? nodeId = null,
+        [Description("Optional relationship type")] string? relationshipType = null,
+        [Description("Maximum rows")] int take = 100,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedSessionId = RequireNonEmpty(sessionId, nameof(sessionId));
+        var boundedTake = Math.Clamp(take, 1, 500);
+        return await ExecuteAsync(
+            ToolGetMemoryRelationships,
+            isWrite: false,
+            new { sessionId = normalizedSessionId, nodeType, nodeId, relationshipType, take = boundedTake },
+            async () =>
+            {
+                IReadOnlyList<MemoryRelationship> rows;
+                if (!string.IsNullOrWhiteSpace(nodeType)
+                    && !string.IsNullOrWhiteSpace(nodeId)
+                    && Enum.TryParse<MemoryNodeType>(nodeType.Trim(), true, out var parsedNodeType))
+                {
+                    rows = await memoryRelationshipRepository.QueryByNodeAsync(
+                        normalizedSessionId,
+                        parsedNodeType,
+                        nodeId.Trim(),
+                        relationshipType,
+                        boundedTake,
+                        cancellationToken);
+                }
+                else
+                {
+                    rows = await memoryRelationshipRepository.QueryBySessionAsync(
+                        normalizedSessionId,
+                        relationshipType,
+                        MemoryRelationshipStatus.Active,
+                        boundedTake,
+                        cancellationToken);
+                }
+
+                return JsonSerializer.Serialize(
+                    new
+                    {
+                        sessionId = normalizedSessionId,
+                        count = rows.Count,
+                        relationships = rows
+                    },
+                    JsonOptions);
+            },
+            cancellationToken);
+    }
+
+    [KernelFunction(ToolBackfillMemoryRelationships)]
+    [Description("Run relationship backfill from existing memory records.")]
+    public async Task<string> BackfillMemoryRelationshipsAsync(
+        [Description("Optional session id filter")] string? sessionId = null,
+        [Description("Max scan size")] int take = 2000,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedSessionId = string.IsNullOrWhiteSpace(sessionId) ? null : sessionId.Trim();
+        return await ExecuteAsync(
+            ToolBackfillMemoryRelationships,
+            isWrite: true,
+            new { sessionId = normalizedSessionId, take },
+            async () =>
+            {
+                var result = await memoryRelationshipRepository.BackfillAsync(normalizedSessionId, Math.Clamp(take, 100, 10000), cancellationToken);
+                return JsonSerializer.Serialize(result, JsonOptions);
+            },
+            cancellationToken);
+    }
+
+    [KernelFunction(ToolExtractMemoryRelationships)]
+    [Description("Use the mini model to infer memory relationships for a session. Set apply=false for dry-run.")]
+    public async Task<string> ExtractMemoryRelationshipsAsync(
+        [Description("Session id")] string sessionId,
+        [Description("Maximum candidates to scan")] int take = 200,
+        [Description("Whether to apply inferred relationships")] bool apply = true,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedSessionId = RequireNonEmpty(sessionId, nameof(sessionId));
+        return await ExecuteAsync(
+            ToolExtractMemoryRelationships,
+            isWrite: apply,
+            new { sessionId = normalizedSessionId, take, apply },
+            async () =>
+            {
+                var result = await memoryRelationshipExtractionService.ExtractAsync(
+                    normalizedSessionId,
+                    Math.Clamp(take, 20, 2000),
+                    apply,
+                    cancellationToken);
+                return JsonSerializer.Serialize(result, JsonOptions);
             },
             cancellationToken);
     }
@@ -196,11 +601,22 @@ public sealed class MemoryToolsPlugin(
 
     private async Task<string> StoreSemanticAsync(string sessionId, string memoryText, StoreRoute route, CancellationToken cancellationToken)
     {
-        var subject = string.IsNullOrWhiteSpace(route.Key) ? $"session:{sessionId}" : route.Key.Trim();
+        var defaultSubject = $"session:{sessionId}";
+        var rawKey = route.Key?.Trim();
+        var subject = string.IsNullOrWhiteSpace(rawKey) ? defaultSubject : rawKey;
         var predicate = string.IsNullOrWhiteSpace(route.Predicate) ? "states" : route.Predicate.Trim();
+        if (!subject.StartsWith("session:", StringComparison.OrdinalIgnoreCase)
+            && !subject.StartsWith("companion:", StringComparison.OrdinalIgnoreCase))
+        {
+            // Keep semantic writes within companion scope by using session subject.
+            predicate = string.IsNullOrWhiteSpace(rawKey) ? predicate : rawKey;
+            subject = defaultSubject;
+        }
         var value = string.IsNullOrWhiteSpace(route.Value) ? memoryText : route.Value.Trim();
         var confidence = Math.Clamp(route.Confidence ?? 0.72, 0, 1);
+        var companionId = await companionScopeResolver.ResolveCompanionIdOrThrowAsync(sessionId, cancellationToken);
         var existingActive = await semanticMemoryRepository.QueryClaimsAsync(
+            companionId,
             subject: subject,
             predicate: predicate,
             status: SemanticClaimStatus.Active,
@@ -242,18 +658,20 @@ public sealed class MemoryToolsPlugin(
             now,
             now);
 
-        var created = await semanticMemoryRepository.CreateClaimAsync(claim, cancellationToken);
+        var created = await semanticMemoryRepository.CreateClaimAsync(companionId, claim, cancellationToken);
         return JsonSerializer.Serialize(new { layer = "semantic", claim = created, deduplicated = false }, JsonOptions);
     }
 
-    private async Task<string> StoreProceduralAsync(string memoryText, StoreRoute route, CancellationToken cancellationToken)
+    private async Task<string> StoreProceduralAsync(string sessionId, string memoryText, StoreRoute route, CancellationToken cancellationToken)
     {
+        var companionId = await companionScopeResolver.ResolveCompanionIdOrThrowAsync(sessionId, cancellationToken);
         var trigger = string.IsNullOrWhiteSpace(route.Key) ? BuildTrigger(memoryText) : route.Key.Trim();
         var name = string.IsNullOrWhiteSpace(route.Predicate) ? "auto routine" : route.Predicate.Trim();
         var value = string.IsNullOrWhiteSpace(route.Value) ? memoryText : route.Value.Trim();
         var steps = BuildProcedureSteps(value);
 
         var routine = await proceduralMemoryRepository.UpsertAsync(
+            companionId,
             new ProceduralRoutine(
                 Guid.NewGuid(),
                 trigger,
@@ -268,54 +686,137 @@ public sealed class MemoryToolsPlugin(
         return JsonSerializer.Serialize(new { layer = "procedural", routine }, JsonOptions);
     }
 
-    private async Task<string> StoreSelfModelAsync(string memoryText, StoreRoute route, CancellationToken cancellationToken)
+    private async Task<string> StoreSelfModelAsync(string sessionId, string memoryText, StoreRoute route, CancellationToken cancellationToken)
     {
-        var key = string.IsNullOrWhiteSpace(route.Key)
-            ? DeriveSelfKey(memoryText)
-            : NormalizeSelfKey(route.Key);
-        var value = string.IsNullOrWhiteSpace(route.Value) ? DeriveSelfValue(memoryText) : route.Value.Trim();
-        var snapshot = await selfModelRepository.GetAsync(cancellationToken);
-        var existing = snapshot.Preferences.FirstOrDefault(x => NormalizeSelfKey(x.Key).Equals(key, StringComparison.Ordinal));
-        var replaced = existing is not null
-                       && !existing.Value.Equals(value, StringComparison.OrdinalIgnoreCase);
-        await selfModelRepository.SetPreferenceAsync(key, value, cancellationToken);
-        if (replaced)
+        var companionId = await companionScopeResolver.ResolveCompanionIdOrThrowAsync(sessionId, cancellationToken);
+        var snapshot = await selfModelRepository.GetAsync(companionId, cancellationToken);
+        var existingByKey = snapshot.Preferences
+            .ToDictionary(x => NormalizeSelfKey(x.Key), StringComparer.Ordinal);
+
+        var parsedEntries = ParseStructuredSelfEntries(memoryText)
+            .DistinctBy(x => NormalizeSelfKey(x.Key))
+            .ToArray();
+        var entries = parsedEntries.Length > 0
+            ? parsedEntries
+            : [new SelfEntry(
+                string.IsNullOrWhiteSpace(route.Key) ? DeriveSelfKey(memoryText) : route.Key,
+                string.IsNullOrWhiteSpace(route.Value) ? DeriveSelfValue(memoryText) : route.Value.Trim())];
+
+        var persistedEntries = new List<object>(entries.Length);
+        var replacedCount = 0;
+        foreach (var entry in entries)
         {
-            logger.LogInformation(
-                "Self-model preference updated. Key={Key} PreviousValue={PreviousValue} NewValue={NewValue}",
-                key,
-                TruncateForLog(existing!.Value, 120),
-                TruncateForLog(value, 120));
+            var key = NormalizeSelfKey(entry.Key);
+            var value = entry.Value.Trim();
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            existingByKey.TryGetValue(key, out var existing);
+            var replaced = existing is not null && !existing.Value.Equals(value, StringComparison.OrdinalIgnoreCase);
+            await selfModelRepository.SetPreferenceAsync(companionId, key, value, cancellationToken);
+            existingByKey[key] = new SelfPreference(key, value, DateTimeOffset.UtcNow);
+            if (replaced)
+            {
+                replacedCount++;
+                logger.LogInformation(
+                    "Self-model preference updated. Key={Key} PreviousValue={PreviousValue} NewValue={NewValue}",
+                    key,
+                    TruncateForLog(existing!.Value, 120),
+                    TruncateForLog(value, 120));
+            }
+
+            persistedEntries.Add(
+                new
+                {
+                    key,
+                    value,
+                    stored = true,
+                    replacedPrevious = replaced,
+                    previousValue = replaced ? existing!.Value : null
+                });
+        }
+
+        if (persistedEntries.Count == 0)
+        {
+            var fallbackKey = string.IsNullOrWhiteSpace(route.Key)
+                ? DeriveSelfKey(memoryText)
+                : NormalizeSelfKey(route.Key);
+            var fallbackValue = string.IsNullOrWhiteSpace(route.Value) ? DeriveSelfValue(memoryText) : route.Value.Trim();
+            await selfModelRepository.SetPreferenceAsync(companionId, fallbackKey, fallbackValue, cancellationToken);
+            persistedEntries.Add(
+                new
+                {
+                    key = fallbackKey,
+                    value = fallbackValue,
+                    stored = true,
+                    replacedPrevious = false,
+                    previousValue = (string?)null
+                });
         }
 
         return JsonSerializer.Serialize(
             new
             {
                 layer = "self",
-                key,
-                value,
-                stored = true,
-                replacedPrevious = replaced,
-                previousValue = replaced ? existing!.Value : null
+                storedCount = persistedEntries.Count,
+                replacedCount,
+                entries = persistedEntries
             },
             JsonOptions);
     }
 
-    private async Task<StoreRoute> ResolveStoreRouteAsync(
+    private async Task<IReadOnlyList<StoreRoute>> ResolveStoreRoutesAsync(
         string sessionId,
         string memoryText,
         string? hint,
         CancellationToken cancellationToken)
     {
+        RegisterRoutingPluginsIfNeeded();
+        var hintedLayer = InferStoreLayerFromHint(hint);
+        if (hintedLayer is not null && hintedLayer is not ("auto" or "all"))
+        {
+            logger.LogInformation("store_memory routing honored hint. Hint={Hint} Layer={Layer}", hint, hintedLayer);
+            return
+            [
+                new StoreRoute
+                {
+                    Layer = hintedLayer,
+                    Value = memoryText,
+                    Confidence = 0.95
+                }
+            ];
+        }
+
         var prompt =
-            "Route this memory write into exactly one layer: working, episodic, semantic, procedural, or self." + Environment.NewLine +
-            "Return strict JSON with keys: layer, key, predicate, value, confidence." + Environment.NewLine +
+            "You are the memory-write routing model." + Environment.NewLine +
+            "Decide what to store and where to store it." + Environment.NewLine +
+            "Route this memory write into one or more entries across: working, episodic, semantic, procedural, self." + Environment.NewLine +
+            "Return strict JSON only in one of these forms:" + Environment.NewLine +
+            "1) {\"entries\":[{\"layer\":\"...\",\"key\":\"...\",\"predicate\":\"...\",\"value\":\"...\",\"confidence\":0.0}]}" + Environment.NewLine +
+            "2) {\"layer\":\"...\",\"key\":\"...\",\"predicate\":\"...\",\"value\":\"...\",\"confidence\":0.0}" + Environment.NewLine +
+            "Available tools:" + Environment.NewLine +
+            "- retrieve_memory(sessionId, query, take?, layer?)" + Environment.NewLine +
+            "- get_current_time(utcOffset?)" + Environment.NewLine +
+            "- get_memory_relationships(sessionId, nodeType?, nodeId?, relationshipType?, take?)" + Environment.NewLine +
+            "Layer definitions:" + Environment.NewLine +
+            "- working: short-lived session context." + Environment.NewLine +
+            "- episodic: timestamped events/experiences." + Environment.NewLine +
+            "- semantic: durable general facts/claims." + Environment.NewLine +
+            "- procedural: reusable steps/routines." + Environment.NewLine +
+            "- self: assistant identity/profile/preferences." + Environment.NewLine +
             "Rules:" + Environment.NewLine +
-            "- Assistant identity/profile facts (name, DOB, role, origin, preferences) -> self." + Environment.NewLine +
+            "- Before routing, call tools when verification is needed." + Environment.NewLine +
+            "- If the memory references existing facts/identity/history/time, retrieve/verify first before deciding entries." + Environment.NewLine +
+            "- Do not assume; check memory when routing depends on prior state or possible conflicts." + Environment.NewLine +
+            "- Decompose compound memory into multiple entries when it contains multiple distinct facts." + Environment.NewLine +
+            "- Assistant identity/profile facts (name, DOB, role, origin, preferences, creators, purpose) -> self." + Environment.NewLine +
             "- Durable facts -> semantic." + Environment.NewLine +
             "- Time-bound event logs -> episodic." + Environment.NewLine +
             "- Reusable step patterns -> procedural." + Environment.NewLine +
             "- Short-lived context -> working." + Environment.NewLine +
+            "- If Hint clearly maps to a layer, follow the Hint unless MemoryText strongly contradicts it." + Environment.NewLine +
             "For self layer, use stable keys when possible: identity.name, identity.birth_datetime, identity.role, identity.origin." + Environment.NewLine +
             "Do not output markdown." + Environment.NewLine +
             $"SessionId: {sessionId}" + Environment.NewLine +
@@ -324,12 +825,33 @@ public sealed class MemoryToolsPlugin(
 
         try
         {
-            var result = await routingKernel.Value.InvokePromptAsync(prompt, cancellationToken: cancellationToken);
+            var executionSettings = GetRoutingExecutionSettings();
+            var result = executionSettings is null
+                ? await routingKernel.Value.InvokePromptAsync(prompt, cancellationToken: cancellationToken)
+                : await routingKernel.Value.InvokePromptAsync(prompt, new KernelArguments(executionSettings), cancellationToken: cancellationToken);
             var raw = result.GetValue<string>();
-            var parsed = DeserializeLenient<StoreRoute>(raw);
-            if (parsed is not null && NormalizeLayer(parsed.Layer) is not null)
+
+            var batch = DeserializeLenient<StoreRouteBatch>(raw);
+            if (batch?.Entries is { Length: > 0 })
             {
-                return parsed;
+                var normalizedEntries = batch.Entries
+                    .Select(entry => NormalizeStoreRoute(entry, memoryText))
+                    .Where(static entry => entry is not null)
+                    .Cast<StoreRoute>()
+                    .ToArray();
+                if (normalizedEntries.Length > 0)
+                {
+                    logger.LogInformation("store_memory router returned multi-entry plan. Count={Count}", normalizedEntries.Length);
+                    return normalizedEntries;
+                }
+            }
+
+            var single = DeserializeLenient<StoreRoute>(raw);
+            var normalizedSingle = NormalizeStoreRoute(single, memoryText);
+            if (normalizedSingle is not null)
+            {
+                logger.LogInformation("store_memory router returned single-entry plan. Layer={Layer}", normalizedSingle.Layer);
+                return [normalizedSingle];
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -337,31 +859,107 @@ public sealed class MemoryToolsPlugin(
             logger.LogWarning(ex, "Memory routing model failed for store_memory. Falling back to heuristics.");
         }
 
+        return
+        [
+            new StoreRoute
+            {
+                Layer = InferStoreLayerHeuristically(memoryText),
+                Value = memoryText,
+                Confidence = 0.72
+            }
+        ];
+    }
+
+    private async Task<string> PersistStoreRouteAsync(
+        string sessionId,
+        string memoryText,
+        StoreRoute route,
+        CancellationToken cancellationToken)
+    {
+        var layer = NormalizeLayer(route.Layer) ?? InferStoreLayerHeuristically(memoryText);
+        logger.LogInformation(
+            "store_memory persisting route. SessionId={SessionId} Layer={Layer} Key={Key} Predicate={Predicate}",
+            sessionId,
+            layer,
+            route.Key,
+            route.Predicate);
+        return layer switch
+        {
+            "self" => await StoreSelfModelAsync(sessionId, memoryText, route, cancellationToken),
+            "semantic" => await StoreSemanticAsync(sessionId, memoryText, route, cancellationToken),
+            "episodic" => await StoreEpisodicAsync(sessionId, memoryText, route, cancellationToken),
+            "procedural" => await StoreProceduralAsync(sessionId, memoryText, route, cancellationToken),
+            _ => await StoreWorkingAsync(sessionId, memoryText, route, cancellationToken)
+        };
+    }
+
+    private static StoreRoute? NormalizeStoreRoute(StoreRoute? route, string memoryText)
+    {
+        if (route is null)
+        {
+            return null;
+        }
+
+        var layer = NormalizeLayer(route.Layer);
+        if (layer is null or "all" or "auto")
+        {
+            return null;
+        }
+
+        var value = string.IsNullOrWhiteSpace(route.Value) ? memoryText : route.Value.Trim();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
         return new StoreRoute
         {
-            Layer = InferStoreLayerHeuristically(memoryText),
-            Value = memoryText,
-            Confidence = 0.6
+            Layer = layer,
+            Key = route.Key,
+            Predicate = route.Predicate,
+            Value = value,
+            Confidence = route.Confidence
         };
+    }
+
+    private static object? ParseJsonOrString(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return value;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<object>(value, JsonOptions);
+        }
+        catch
+        {
+            return value;
+        }
     }
 
     private async Task<IReadOnlyList<string>> ResolveRetrieveLayersAsync(
         string query,
         string? explicitLayer,
+        CompanionCognitiveProfileDocument profile,
         CancellationToken cancellationToken)
     {
         var normalizedExplicitLayer = NormalizeLayer(explicitLayer);
         if (!string.IsNullOrWhiteSpace(normalizedExplicitLayer) && normalizedExplicitLayer != "auto")
         {
             return normalizedExplicitLayer == "all"
-                ? ["working", "episodic", "semantic", "procedural", "self"]
+                ? SortLayersByProfile(["working", "episodic", "semantic", "procedural", "self"], profile)
                 : [normalizedExplicitLayer];
         }
 
         if (LooksLikeIdentityFieldQuery(query))
         {
             // Identity lookups can span self-model keys and semantic claims.
-            return ["self", "semantic"];
+            var identityLayers = profile.Memory.LayerPriorities.IdentityBoost >= 0.5
+                ? new[] { "self", "semantic" }
+                : new[] { "semantic", "self" };
+            return SortLayersByProfile(identityLayers, profile);
         }
 
         var prompt =
@@ -387,7 +985,7 @@ public sealed class MemoryToolsPlugin(
 
                 if (normalized.Length > 0)
                 {
-                    return normalized;
+                    return SortLayersByProfile(normalized, profile);
                 }
             }
         }
@@ -396,7 +994,51 @@ public sealed class MemoryToolsPlugin(
             logger.LogDebug(ex, "Memory routing model failed for retrieve_memory. Falling back to heuristics.");
         }
 
-        return InferRetrieveLayersHeuristically(query);
+        return SortLayersByProfile(InferRetrieveLayersHeuristically(query), profile);
+    }
+
+    private async Task<ResolvedCompanionCognitiveProfile> ResolveCognitiveProfileAsync(
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await cognitiveProfileResolver.ResolveBySessionIdAsync(sessionId, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogDebug(ex, "Companion cognitive profile resolution failed. Falling back to defaults.");
+            var fallback = new CompanionCognitiveProfileDocument();
+            return new ResolvedCompanionCognitiveProfile(
+                Guid.Empty,
+                Guid.Empty,
+                0,
+                fallback,
+                new CompanionCognitiveRuntimePolicy(Guid.Empty, Guid.Empty, 0, fallback, new RuntimeLimits(120, 20, 8, 1)),
+                IsFallback: true);
+        }
+    }
+
+    private static string[] SortLayersByProfile(IEnumerable<string> layers, CompanionCognitiveProfileDocument profile)
+    {
+        return layers
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(layer => GetLayerPriority(layer, profile))
+            .ThenBy(layer => layer)
+            .ToArray();
+    }
+
+    private static double GetLayerPriority(string layer, CompanionCognitiveProfileDocument profile)
+    {
+        return NormalizeLayer(layer) switch
+        {
+            "working" => profile.Memory.LayerPriorities.Working,
+            "episodic" => profile.Memory.LayerPriorities.Episodic,
+            "semantic" => profile.Memory.LayerPriorities.Semantic,
+            "procedural" => profile.Memory.LayerPriorities.Procedural,
+            "self" => profile.Memory.LayerPriorities.Self + profile.Memory.LayerPriorities.IdentityBoost,
+            _ => 0
+        };
     }
 
     private static QueryProfile BuildQueryProfile(string rawQuery, int take)
@@ -503,7 +1145,7 @@ public sealed class MemoryToolsPlugin(
                 return BuildBatch(episodicCandidates);
 
             case "semantic":
-                var semantic = await QuerySemanticCandidatesAsync(profile, cancellationToken);
+                var semantic = await QuerySemanticCandidatesAsync(sessionId, profile, cancellationToken);
                 var semanticCandidates = semantic
                     .Select(
                         item => new RetrievalCandidate(
@@ -516,10 +1158,11 @@ public sealed class MemoryToolsPlugin(
                 return BuildBatch(semanticCandidates);
 
             case "procedural":
+                var proceduralCompanionId = await companionScopeResolver.ResolveCompanionIdOrThrowAsync(sessionId, cancellationToken);
                 var proceduralTake = Math.Min(200, profile.Take * 6);
                 var procedural = string.IsNullOrWhiteSpace(profile.RawQuery)
-                    ? await proceduralMemoryRepository.QueryRecentAsync(proceduralTake, cancellationToken)
-                    : await proceduralMemoryRepository.SearchAsync(profile.RawQuery, proceduralTake, cancellationToken);
+                    ? await proceduralMemoryRepository.QueryRecentAsync(proceduralCompanionId, proceduralTake, cancellationToken)
+                    : await proceduralMemoryRepository.SearchAsync(proceduralCompanionId, profile.RawQuery, proceduralTake, cancellationToken);
                 var proceduralCandidates = procedural
                     .Select(
                         item => new RetrievalCandidate(
@@ -532,7 +1175,8 @@ public sealed class MemoryToolsPlugin(
                 return BuildBatch(proceduralCandidates);
 
             case "self":
-                var snapshot = await selfModelRepository.GetAsync(cancellationToken);
+                var selfCompanionId = await companionScopeResolver.ResolveCompanionIdOrThrowAsync(sessionId, cancellationToken);
+                var snapshot = await selfModelRepository.GetAsync(selfCompanionId, cancellationToken);
                 var selfCandidates = snapshot.Preferences
                     .Take(Math.Min(200, profile.Take * 8))
                     .Select(
@@ -552,10 +1196,12 @@ public sealed class MemoryToolsPlugin(
 
     private static IReadOnlyList<RankedCandidate> RankCandidates(
         IEnumerable<RetrievalCandidate> candidates,
-        QueryProfile profile)
+        QueryProfile profile,
+        IReadOnlyDictionary<Guid, int> semanticRelationshipDegree,
+        CompanionCognitiveProfileDocument cognitiveProfile)
     {
         return candidates
-            .Select(candidate => new RankedCandidate(candidate, ComputeCandidateScore(candidate, profile)))
+            .Select(candidate => new RankedCandidate(candidate, ComputeCandidateScore(candidate, profile, semanticRelationshipDegree, cognitiveProfile)))
             .Where(x => string.IsNullOrWhiteSpace(profile.Criteria.NormalizedQuery) || x.Score > 0)
             .OrderByDescending(x => x.Score)
             .ThenByDescending(x => x.Candidate.OccurredAtUtc ?? DateTimeOffset.MinValue)
@@ -599,34 +1245,51 @@ public sealed class MemoryToolsPlugin(
         return results;
     }
 
-    private static int ComputeCandidateScore(RetrievalCandidate candidate, QueryProfile profile)
+    private static int ComputeCandidateScore(
+        RetrievalCandidate candidate,
+        QueryProfile profile,
+        IReadOnlyDictionary<Guid, int> semanticRelationshipDegree,
+        CompanionCognitiveProfileDocument cognitiveProfile)
     {
         var score = candidate.BaseScore;
         score += ScoreByStringSearch(candidate.Text, profile.Criteria);
-        score += ComputeLayerPriorityBonus(candidate.Layer, profile.IsIdentityLike);
-        score += ComputeRecencyBonus(candidate.OccurredAtUtc);
-        score += ComputePayloadBonus(candidate, profile);
+        score += ComputeLayerPriorityBonus(candidate.Layer, profile.IsIdentityLike, cognitiveProfile);
+        score += ComputeRecencyBonus(candidate.OccurredAtUtc, cognitiveProfile);
+        score += ComputePayloadBonus(candidate, profile, semanticRelationshipDegree, cognitiveProfile);
         return score;
     }
 
-    private static int ComputePayloadBonus(RetrievalCandidate candidate, QueryProfile profile)
+    private static int ComputePayloadBonus(
+        RetrievalCandidate candidate,
+        QueryProfile profile,
+        IReadOnlyDictionary<Guid, int> semanticRelationshipDegree,
+        CompanionCognitiveProfileDocument cognitiveProfile)
     {
         var bonus = 0;
+        var confidenceWeight = Math.Clamp(cognitiveProfile.Memory.RetrievalWeights.Confidence, 0, 1.5);
+        var relationshipWeight = Math.Clamp(cognitiveProfile.Memory.RetrievalWeights.RelationshipDegree, 0, 1.5);
+        var evidenceWeight = Math.Clamp(cognitiveProfile.Memory.RetrievalWeights.EvidenceStrength, 0, 1.5);
         if (candidate.Payload is SemanticClaim claim)
         {
-            bonus += claim.Status switch
+            bonus += (int)Math.Round((claim.Status switch
             {
                 SemanticClaimStatus.Active => 2,
                 SemanticClaimStatus.Probabilistic => -1,
                 SemanticClaimStatus.Superseded => -6,
                 _ => 0
-            };
+            }) * evidenceWeight);
+            bonus += (int)Math.Round(Math.Clamp(claim.Confidence, 0, 1) * 4 * confidenceWeight);
 
             if (profile.IsIdentityLike
                 && (ContainsAnyAlias(claim.Subject, profile.Criteria.Aliases)
                     || ContainsAnyAlias(claim.Predicate, profile.Criteria.Aliases)))
             {
                 bonus += 3;
+            }
+
+            if (semanticRelationshipDegree.TryGetValue(claim.ClaimId, out var degree))
+            {
+                bonus += (int)Math.Round(Math.Clamp(degree, 0, 5) * relationshipWeight);
             }
         }
 
@@ -655,51 +1318,55 @@ public sealed class MemoryToolsPlugin(
         return false;
     }
 
-    private static int ComputeLayerPriorityBonus(string layer, bool isIdentityLike)
+    private static int ComputeLayerPriorityBonus(string layer, bool isIdentityLike, CompanionCognitiveProfileDocument cognitiveProfile)
     {
+        var layerBase = layer switch
+        {
+            "working" => cognitiveProfile.Memory.LayerPriorities.Working,
+            "episodic" => cognitiveProfile.Memory.LayerPriorities.Episodic,
+            "semantic" => cognitiveProfile.Memory.LayerPriorities.Semantic,
+            "procedural" => cognitiveProfile.Memory.LayerPriorities.Procedural,
+            "self" => cognitiveProfile.Memory.LayerPriorities.Self,
+            _ => 0
+        };
+        var scaledBase = (int)Math.Round(Math.Clamp(layerBase, 0, 1) * 4);
         if (isIdentityLike)
         {
+            var identityBoost = (int)Math.Round(Math.Clamp(cognitiveProfile.Memory.LayerPriorities.IdentityBoost, 0, 1) * 4);
             return layer switch
             {
-                "self" => 6,
-                "semantic" => 4,
-                "working" => 1,
-                _ => 0
+                "self" => 2 + scaledBase + identityBoost,
+                "semantic" => 1 + scaledBase + identityBoost,
+                "working" => scaledBase,
+                _ => scaledBase
             };
         }
 
-        return layer switch
-        {
-            "episodic" => 2,
-            "semantic" => 2,
-            "working" => 1,
-            "procedural" => 1,
-            "self" => 1,
-            _ => 0
-        };
+        return scaledBase;
     }
 
-    private static int ComputeRecencyBonus(DateTimeOffset? occurredAtUtc)
+    private static int ComputeRecencyBonus(DateTimeOffset? occurredAtUtc, CompanionCognitiveProfileDocument cognitiveProfile)
     {
         if (!occurredAtUtc.HasValue)
         {
             return 0;
         }
 
+        var recencyWeight = Math.Clamp(cognitiveProfile.Memory.RetrievalWeights.Recency, 0, 1.5);
         var ageHours = (DateTimeOffset.UtcNow - occurredAtUtc.Value).TotalHours;
         if (ageHours <= 24)
         {
-            return 3;
+            return (int)Math.Round(3 * recencyWeight);
         }
 
         if (ageHours <= 24 * 7)
         {
-            return 2;
+            return (int)Math.Round(2 * recencyWeight);
         }
 
         if (ageHours <= 24 * 30)
         {
-            return 1;
+            return (int)Math.Round(recencyWeight);
         }
 
         return 0;
@@ -785,6 +1452,41 @@ public sealed class MemoryToolsPlugin(
         return null;
     }
 
+    private void RegisterRoutingPluginsIfNeeded()
+    {
+        if (routingKernel.Value.Plugins.Any(p => string.Equals(p.Name, RoutingPluginName, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        routingKernel.Value.Plugins.AddFromObject(new RoutingReadOnlyTools(this), RoutingPluginName);
+    }
+
+    private PromptExecutionSettings? GetRoutingExecutionSettings()
+    {
+        var routingProvider = string.IsNullOrWhiteSpace(semanticKernelOptions.ClaimExtractionProvider)
+            ? semanticKernelOptions.Provider
+            : semanticKernelOptions.ClaimExtractionProvider;
+
+        if (string.Equals(routingProvider, "OpenAI", StringComparison.OrdinalIgnoreCase))
+        {
+            return new OpenAIPromptExecutionSettings
+            {
+                ToolCallBehavior = ToolCallBehavior.AutoInvokeKernelFunctions
+            };
+        }
+
+        if (string.Equals(routingProvider, "Ollama", StringComparison.OrdinalIgnoreCase))
+        {
+            return new OllamaPromptExecutionSettings
+            {
+                FunctionChoiceBehavior = FunctionChoiceBehavior.Auto()
+            };
+        }
+
+        return null;
+    }
+
     private static string? InferIdentityKeyFromSemanticClaim(SemanticClaim claim)
     {
         var subjectKey = InferIdentityKeyFromNormalized(NormalizeSearchText(claim.Subject));
@@ -847,14 +1549,17 @@ public sealed class MemoryToolsPlugin(
     }
 
     private async Task<IReadOnlyList<SemanticClaim>> QuerySemanticCandidatesAsync(
+        string sessionId,
         QueryProfile profile,
         CancellationToken cancellationToken)
     {
         PruneRequestCachesIfNeeded();
+        var companionId = await companionScopeResolver.ResolveCompanionIdOrThrowAsync(sessionId, cancellationToken);
         var expandedTake = Math.Min(240, profile.Take * 8);
         if (string.IsNullOrWhiteSpace(profile.RawQuery))
         {
             return await semanticMemoryRepository.QueryClaimsAsync(
+                companionId,
                 take: expandedTake,
                 cancellationToken: cancellationToken);
         }
@@ -867,17 +1572,18 @@ public sealed class MemoryToolsPlugin(
             .Take(12)
             .ToArray();
 
-        var termTasks = terms
-            .Select(term => QuerySemanticByTermCachedAsync(term, expandedTake, cancellationToken))
-            .ToArray();
-        var termResults = await Task.WhenAll(termTasks);
-        var candidates = termResults
-            .SelectMany(x => x)
-            .ToList();
+        // Semantic repository uses EF Core; execute term lookups serially to avoid DbContext concurrency.
+        var candidates = new List<SemanticClaim>(expandedTake * Math.Max(1, terms.Length));
+        foreach (var term in terms)
+        {
+            var termClaims = await QuerySemanticByTermCachedAsync(companionId, term, expandedTake, cancellationToken);
+            candidates.AddRange(termClaims);
+        }
 
         if (candidates.Count < expandedTake)
         {
             var recent = await semanticMemoryRepository.QueryClaimsAsync(
+                companionId,
                 take: expandedTake,
                 cancellationToken: cancellationToken);
             candidates.AddRange(recent);
@@ -890,11 +1596,12 @@ public sealed class MemoryToolsPlugin(
     }
 
     private async Task<IReadOnlyList<SemanticClaim>> QuerySemanticByTermCachedAsync(
+        Guid companionId,
         string term,
         int take,
         CancellationToken cancellationToken)
     {
-        var cacheKey = $"{term}|{take}";
+        var cacheKey = $"{companionId:N}|{term}|{take}";
         var wasCached = semanticTermCache.TryGetValue(cacheKey, out var cached);
         if (wasCached && cached is not null)
         {
@@ -902,7 +1609,7 @@ public sealed class MemoryToolsPlugin(
         }
 
         var created = new Lazy<Task<IReadOnlyList<SemanticClaim>>>(
-            () => QuerySemanticByTermAsync(term, take, cancellationToken),
+            () => QuerySemanticByTermAsync(companionId, term, take, cancellationToken),
             LazyThreadSafetyMode.ExecutionAndPublication);
         var winner = semanticTermCache.GetOrAdd(cacheKey, created);
         return await AwaitCachedSemanticTermAsync(cacheKey, winner);
@@ -924,11 +1631,13 @@ public sealed class MemoryToolsPlugin(
     }
 
     private async Task<IReadOnlyList<SemanticClaim>> QuerySemanticByTermAsync(
+        Guid companionId,
         string term,
         int take,
         CancellationToken cancellationToken)
     {
         return await semanticMemoryRepository.SearchClaimsAsync(
+            companionId: companionId,
             query: term,
             take: take,
             cancellationToken: cancellationToken);
@@ -1067,7 +1776,8 @@ public sealed class MemoryToolsPlugin(
     {
         var normalized = rawKey.Trim().ToLowerInvariant()
             .Replace(' ', '_')
-            .Replace('-', '_');
+            .Replace('-', '_')
+            .Replace('/', '_');
 
         if (string.IsNullOrWhiteSpace(normalized))
         {
@@ -1114,6 +1824,66 @@ public sealed class MemoryToolsPlugin(
         }
 
         return memoryText.Trim();
+    }
+
+    private static IReadOnlyList<SelfEntry> ParseStructuredSelfEntries(string memoryText)
+    {
+        if (string.IsNullOrWhiteSpace(memoryText))
+        {
+            return [];
+        }
+
+        var text = memoryText.Trim();
+        var firstEquals = text.IndexOf('=');
+        var firstColon = text.IndexOf(':');
+        if (firstEquals > 0 && firstColon >= 0 && firstColon < firstEquals)
+        {
+            text = text[(firstColon + 1)..].Trim();
+        }
+
+        // Some model outputs use sentence separators between key/value pairs.
+        text = Regex.Replace(
+            text,
+            @"\.\s+(?=[a-zA-Z][a-zA-Z0-9_./-]*\s*(?:=|:))",
+            "; ",
+            RegexOptions.CultureInvariant);
+
+        var likelyStructured = text.Contains('=') || text.Contains(':') || text.Contains(';') || text.Contains('\n');
+        if (!likelyStructured)
+        {
+            return [];
+        }
+
+        var parsed = new List<SelfEntry>();
+        var segments = text.Split([';', '\n', '\r', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var segment in segments)
+        {
+            var separatorIndex = segment.IndexOf('=');
+            if (separatorIndex <= 0)
+            {
+                var colonIndex = segment.IndexOf(':');
+                if (colonIndex > 0 && !segment.Contains("://", StringComparison.Ordinal))
+                {
+                    separatorIndex = colonIndex;
+                }
+            }
+
+            if (separatorIndex <= 0)
+            {
+                continue;
+            }
+
+            var key = segment[..separatorIndex].Trim().Trim('"', '\'', '`', '.', ',', ';');
+            var value = segment[(separatorIndex + 1)..].Trim().Trim('"', '\'', '`', '.', ',', ';');
+            if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            parsed.Add(new SelfEntry(key, value));
+        }
+
+        return parsed;
     }
 
     private static string BuildTrigger(string memoryText)
@@ -1240,6 +2010,70 @@ public sealed class MemoryToolsPlugin(
             "auto" => "auto",
             _ => null
         };
+    }
+
+    private static string? InferStoreLayerFromHint(string? hint)
+    {
+        if (string.IsNullOrWhiteSpace(hint))
+        {
+            return null;
+        }
+
+        var normalized = hint.Trim().ToLowerInvariant();
+        var direct = NormalizeLayer(normalized);
+        if (direct is not null)
+        {
+            return direct;
+        }
+
+        var tokens = normalized
+            .Split(['.', ':', '/', '|', ',', ';', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var token in tokens)
+        {
+            var layer = NormalizeLayer(token);
+            if (layer is not null)
+            {
+                return layer;
+            }
+        }
+
+        if (normalized.Contains("identity", StringComparison.Ordinal)
+            || normalized.Contains("self", StringComparison.Ordinal))
+        {
+            return "self";
+        }
+
+        // Companion bootstrap hints should avoid model-routed storage paths so creation
+        // remains resilient even when local routing/embedding services are unavailable.
+        if (normalized.StartsWith("companion.", StringComparison.Ordinal))
+        {
+            return "self";
+        }
+
+        return null;
+    }
+
+    private static bool TryParseUtcOffset(string? input, out TimeSpan offset)
+    {
+        offset = TimeSpan.Zero;
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return false;
+        }
+
+        var trimmed = input.Trim();
+        if (!Regex.IsMatch(trimmed, "^[+-][0-9]{2}:[0-9]{2}$", RegexOptions.CultureInvariant))
+        {
+            return false;
+        }
+
+        if (!TimeSpan.TryParseExact(trimmed[1..], "hh\\:mm", CultureInfo.InvariantCulture, out var parsed))
+        {
+            return false;
+        }
+
+        offset = trimmed[0] == '-' ? -parsed : parsed;
+        return offset >= TimeSpan.FromHours(-14) && offset <= TimeSpan.FromHours(14);
     }
 
     private static string? NormalizeRole(string? role)
@@ -1457,6 +2291,8 @@ public sealed class MemoryToolsPlugin(
         bool IsIdentityLike,
         int Take);
 
+    private sealed record SelfEntry(string Key, string Value);
+
     private sealed record RetrievalCandidate(
         string Layer,
         string Text,
@@ -1488,9 +2324,34 @@ public sealed class MemoryToolsPlugin(
         public double? Confidence { get; set; }
     }
 
+    private sealed class StoreRouteBatch
+    {
+        public StoreRoute[]? Entries { get; set; }
+    }
+
     private sealed class RetrieveRoute
     {
         public string[]? Layers { get; set; }
+    }
+
+    private sealed class RoutingReadOnlyTools(MemoryToolsPlugin owner)
+    {
+        [KernelFunction(ToolRetrieveMemory)]
+        [Description("Retrieve memory for this session. Read-only tool for routing context.")]
+        public Task<string> RetrieveMemoryAsync(
+            [Description("Session id")] string sessionId,
+            [Description("What to retrieve")] string query,
+            [Description("Maximum items to return")] int take = 20,
+            [Description("Optional layer override: working|episodic|semantic|procedural|self|all")] string? layer = null,
+            CancellationToken cancellationToken = default)
+            => owner.RetrieveMemoryAsync(sessionId, query, take, layer, cancellationToken);
+
+        [KernelFunction(ToolGetCurrentTime)]
+        [Description("Get current time details. Optional UTC offset format: +/-HH:mm.")]
+        public Task<string> GetCurrentTimeAsync(
+            [Description("Optional UTC offset in format +/-HH:mm")] string? utcOffset = null,
+            CancellationToken cancellationToken = default)
+            => owner.GetCurrentTimeAsync(utcOffset, cancellationToken);
     }
 
     private sealed record SearchCriteria(string NormalizedQuery, string[] Aliases, string[] Terms);

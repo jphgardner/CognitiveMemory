@@ -1,28 +1,47 @@
 using CognitiveMemory.Application.Abstractions;
 using CognitiveMemory.Domain.Memory;
+using CognitiveMemory.Infrastructure.Events;
 using CognitiveMemory.Infrastructure.Persistence;
+using CognitiveMemory.Infrastructure.Companions;
 using CognitiveMemory.Infrastructure.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 
 namespace CognitiveMemory.Infrastructure.Repositories;
 
-public sealed class ToolInvocationAuditRepository(MemoryDbContext dbContext) : IToolInvocationAuditRepository
+public sealed class ToolInvocationAuditRepository(MemoryDbContext dbContext, IOutboxWriter outboxWriter, ICompanionScopeResolver companionScopeResolver) : IToolInvocationAuditRepository
 {
     public async Task AddAsync(ToolInvocationAudit audit, CancellationToken cancellationToken = default)
     {
+        var companionId = await ResolveCompanionIdFromArgumentsAsync(audit.ArgumentsJson, cancellationToken);
         dbContext.ToolInvocationAudits.Add(
             new ToolInvocationAuditEntity
             {
                 AuditId = audit.AuditId,
+                CompanionId = companionId,
                 ToolName = audit.ToolName,
                 IsWrite = audit.IsWrite,
                 ArgumentsJson = audit.ArgumentsJson,
                 ResultJson = audit.ResultJson,
                 Succeeded = audit.Succeeded,
-                Error = audit.Error,
-                ExecutedAtUtc = audit.ExecutedAtUtc
+                    Error = audit.Error,
+                    ExecutedAtUtc = audit.ExecutedAtUtc
             });
 
+        outboxWriter.Enqueue(
+            MemoryEventTypes.ToolInvocationCompleted,
+            aggregateType: "ToolInvocationAudit",
+            aggregateId: audit.AuditId.ToString("N"),
+            payload: new
+            {
+                companionId,
+                audit.AuditId,
+                audit.ToolName,
+                audit.IsWrite,
+                audit.Succeeded,
+                audit.ExecutedAtUtc,
+                audit.Error
+            });
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
@@ -55,5 +74,37 @@ public sealed class ToolInvocationAuditRepository(MemoryDbContext dbContext) : I
                     x.Error,
                     x.ExecutedAtUtc))
             .ToArray();
+    }
+
+    private async Task<Guid> ResolveCompanionIdFromArgumentsAsync(string argumentsJson, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(argumentsJson))
+        {
+            return Guid.Empty;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(argumentsJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return Guid.Empty;
+            }
+
+            if (doc.RootElement.TryGetProperty("sessionId", out var sessionProp))
+            {
+                var sessionId = sessionProp.GetString();
+                if (!string.IsNullOrWhiteSpace(sessionId))
+                {
+                    return await companionScopeResolver.ResolveCompanionIdOrThrowAsync(sessionId.Trim(), cancellationToken);
+                }
+            }
+        }
+        catch
+        {
+            // keep audit even when scope cannot be resolved
+        }
+
+        return Guid.Empty;
     }
 }

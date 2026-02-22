@@ -1,4 +1,7 @@
-using CognitiveMemory.Application.Procedural;
+using CognitiveMemory.Application.Abstractions;
+using CognitiveMemory.Api.Security;
+using CognitiveMemory.Domain.Memory;
+using CognitiveMemory.Infrastructure.Persistence;
 
 namespace CognitiveMemory.Api.Endpoints;
 
@@ -6,18 +9,30 @@ public static class ProceduralMemoryEndpoints
 {
     public static IEndpointRouteBuilder MapProceduralMemoryEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        endpoints.MapPost(
-                "/api/procedural/routines",
-                async (UpsertRoutineDto request, IProceduralMemoryService service, CancellationToken cancellationToken) =>
+        var group = endpoints.MapGroup("/api/procedural").WithTags("Procedural").RequireAuthorization();
+
+        group.MapPost(
+                "/routines",
+                async (HttpContext httpContext, UpsertRoutineDto request, IProceduralMemoryRepository repository, MemoryDbContext dbContext, CompanionOwnershipService ownershipService, CancellationToken cancellationToken) =>
                 {
-                    var created = await service.UpsertAsync(
-                        new UpsertProceduralRoutineRequest(
-                            request.RoutineId,
+                    var companion = await ownershipService.ResolveOwnedCompanionAsync(httpContext.User, request.CompanionId, dbContext, cancellationToken);
+                    if (companion is null)
+                    {
+                        return Results.NotFound();
+                    }
+
+                    var now = DateTimeOffset.UtcNow;
+                    var created = await repository.UpsertAsync(
+                        companion.CompanionId,
+                        new ProceduralRoutine(
+                            request.RoutineId ?? Guid.NewGuid(),
                             request.Trigger,
                             request.Name,
                             request.Steps,
                             request.Checkpoints,
-                            request.Outcome),
+                            request.Outcome,
+                            now,
+                            now),
                         cancellationToken);
 
                     return Results.Ok(created);
@@ -25,11 +40,17 @@ public static class ProceduralMemoryEndpoints
             .WithName("UpsertProceduralRoutine")
             .WithTags("Procedural");
 
-        endpoints.MapGet(
-                "/api/procedural/routines",
-                async (string trigger, int? take, IProceduralMemoryService service, CancellationToken cancellationToken) =>
+        group.MapGet(
+                "/routines",
+                async (HttpContext httpContext, Guid companionId, string trigger, int? take, IProceduralMemoryRepository repository, MemoryDbContext dbContext, CompanionOwnershipService ownershipService, CancellationToken cancellationToken) =>
                 {
-                    var routines = await service.QueryByTriggerAsync(trigger, take ?? 20, cancellationToken);
+                    var companion = await ownershipService.ResolveOwnedCompanionAsync(httpContext.User, companionId, dbContext, cancellationToken);
+                    if (companion is null)
+                    {
+                        return Results.NotFound();
+                    }
+
+                    var routines = await repository.QueryByTriggerAsync(companion.CompanionId, trigger, take ?? 20, cancellationToken);
                     return Results.Ok(routines);
                 })
             .WithName("QueryProceduralRoutines")
@@ -40,6 +61,7 @@ public static class ProceduralMemoryEndpoints
 }
 
 public sealed record UpsertRoutineDto(
+    Guid CompanionId,
     Guid? RoutineId,
     string Trigger,
     string Name,
