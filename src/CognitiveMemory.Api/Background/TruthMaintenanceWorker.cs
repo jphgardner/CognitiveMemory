@@ -20,17 +20,28 @@ public sealed class TruthMaintenanceWorker(
 
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
-            using var scope = serviceProvider.CreateScope();
-            var service = scope.ServiceProvider.GetRequiredService<ITruthMaintenanceService>();
-            var result = await service.RunOnceAsync(stoppingToken);
+            try
+            {
+                using var scope = serviceProvider.CreateScope();
+                var service = scope.ServiceProvider.GetRequiredService<ITruthMaintenanceService>();
+                var result = await service.RunOnceAsync(stoppingToken);
 
-            logger.LogInformation(
-                "Truth run complete. Claims={Claims} ConflictClusters={Conflicts} Contradictions={Contradictions} Adjustments={Adjustments} Probabilistic={Probabilistic}",
-                result.ClaimsScanned,
-                result.ConflictClusters,
-                result.ContradictionsRecorded,
-                result.ConfidenceAdjustments,
-                result.ProbabilisticMarks);
+                logger.LogInformation(
+                    "Truth run complete. Claims={Claims} ConflictClusters={Conflicts} Contradictions={Contradictions} Adjustments={Adjustments} Probabilistic={Probabilistic}",
+                    result.ClaimsScanned,
+                    result.ConflictClusters,
+                    result.ContradictionsRecorded,
+                    result.ConfidenceAdjustments,
+                    result.ProbabilisticMarks);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Truth maintenance worker cycle failed.");
+            }
         }
     }
 }

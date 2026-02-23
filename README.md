@@ -46,19 +46,19 @@ Runtime alignment:
 - Development Semantic Kernel provider is configured for local Ollama (`SemanticKernel:Provider=Ollama`).
 
 ## Current Endpoints
-- `GET /api/v1/memory/health`
-- `GET /api/v1/memory/claims`
-- `POST /api/v1/memory/claims`
-- `POST /api/v1/ingest`
-- `POST /api/v1/query`
-- `POST /api/v1/answer`
-- `GET /api/v1/conscience/decisions/recent`
-- `GET /api/v1/conscience/decisions/{sourceType}/{sourceRef}`
-- `GET /api/v1/conscience/replay/{requestId}`
-- `GET /api/v1/conscience/policy`
-- `GET /api/v1/ops/outbox/summary`
-- `GET /api/v1/ops/outbox/events`
-- `GET /api/v1/ops/calibration/summary`
+- Auth: `/api/auth/*`
+- Companions: `/api/companions/*`
+- Chat: `/api/chat` and `/api/chat/stream`
+- Episodic memory: `/api/episodic/*`
+- Semantic memory: `/api/semantic/*`
+- Procedural memory: `/api/procedural/*`
+- Self model: `/api/self-model/*`
+- Relationships: `/api/relationships/*`
+- Eventing/SSE: `/api/eventing/*`
+- Subconscious debates: `/api/subconscious/*`
+- Scheduled actions: `/api/scheduled-actions/*`
+- Workspace and operations: `/api/workspace/*`, `/api/tool-invocations/*`
+- Cognitive control endpoints: `/api/consolidation/*`, `/api/reasoning/*`, `/api/planning/*`, `/api/identity/*`, `/api/truth/*`
 
 ## OpenAI-Compatible Facade
 - `GET /v1/models`
@@ -68,9 +68,9 @@ Runtime alignment:
 
 For OpenAI-client chat apps:
 - Base URL: `http://localhost:8080/v1`
-- API key: any non-empty value (default config accepts it)
+- API key: any non-empty bearer token (OpenAI-compatible facade validates non-empty bearer token)
 - Model: `cognitivememory-chat`
-- Semantic Kernel agents can use memory plugins; write tools are disabled by default via `AgentTooling:EnableWrites=false`
+- Embeddings model: `cognitivememory-embedding`
 
 For the bundled Angular chat UI:
 - Source: `frontend/cognitive-memory-chat`
@@ -79,9 +79,7 @@ For the bundled Angular chat UI:
 - UI default API key: `local-dev-key`
 
 ## Documentation
-- `documentation/README.md`
-- `documentation/api-contracts.md`
-- `documentation/angular-chat-ui.md`
-- `documentation/current-mission-runtime-architecture.md`
-- `documentation/phases-1-6-implementation-notes.md`
-- `plans/mission-first-cognitive-system-plan-v2-2026-02-13.md`
+- `PRODUCT_DEEP_DIVE.md`
+- `EVENT_DRIVEN_ARCHITECTURE.md`
+- `SUBCONSCIOUS_DEBATE_BLUEPRINT.md`
+- `CODEBASE_FULL_STATUS.md`

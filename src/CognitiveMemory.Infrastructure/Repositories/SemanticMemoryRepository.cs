@@ -239,14 +239,16 @@ public sealed class SemanticMemoryRepository(
 
         if (!string.IsNullOrWhiteSpace(subject))
         {
-            var normalizedSubject = subject.Trim().ToLowerInvariant();
-            query = query.Where(x => x.Subject.ToLower().Contains(normalizedSubject));
+            var normalizedSubject = subject.Trim();
+            var pattern = SqlLikePattern.Contains(normalizedSubject);
+            query = query.Where(x => EF.Functions.ILike(x.Subject, pattern));
         }
 
         if (!string.IsNullOrWhiteSpace(predicate))
         {
-            var normalizedPredicate = predicate.Trim().ToLowerInvariant();
-            query = query.Where(x => x.Predicate.ToLower().Contains(normalizedPredicate));
+            var normalizedPredicate = predicate.Trim();
+            var pattern = SqlLikePattern.Contains(normalizedPredicate);
+            query = query.Where(x => EF.Functions.ILike(x.Predicate, pattern));
         }
 
         if (status.HasValue)
@@ -394,22 +396,24 @@ public sealed class SemanticMemoryRepository(
 
         // OR query for recall; ranking handles precision.
         var first = normalizedTerms[0];
+        var firstPattern = SqlLikePattern.Contains(first);
         queryable = queryable.Where(
-            x => x.Subject.ToLower().Contains(first)
-                 || x.Predicate.ToLower().Contains(first)
-                 || x.Value.ToLower().Contains(first)
-                 || x.Scope.ToLower().Contains(first));
+            x => EF.Functions.ILike(x.Subject, firstPattern)
+                 || EF.Functions.ILike(x.Predicate, firstPattern)
+                 || EF.Functions.ILike(x.Value, firstPattern)
+                 || EF.Functions.ILike(x.Scope, firstPattern));
 
         for (var i = 1; i < normalizedTerms.Length; i++)
         {
             var term = normalizedTerms[i];
+            var termPattern = SqlLikePattern.Contains(term);
             queryable = queryable.Union(
                 dbContext.SemanticClaims.AsNoTracking().Where(
                     x => x.CompanionId == companionId
-                         && (x.Subject.ToLower().Contains(term)
-                         || x.Predicate.ToLower().Contains(term)
-                         || x.Value.ToLower().Contains(term)
-                         || x.Scope.ToLower().Contains(term))));
+                         && (EF.Functions.ILike(x.Subject, termPattern)
+                         || EF.Functions.ILike(x.Predicate, termPattern)
+                         || EF.Functions.ILike(x.Value, termPattern)
+                         || EF.Functions.ILike(x.Scope, termPattern))));
         }
 
         return queryable;
@@ -515,10 +519,6 @@ public sealed class SemanticMemoryRepository(
         CancellationToken cancellationToken)
     {
         var output = new Dictionary<Guid, (SemanticClaim claim, double score)>();
-        if (dbContext.Database.ProviderName?.Contains("Npgsql", StringComparison.OrdinalIgnoreCase) != true)
-        {
-            return output;
-        }
 
         var queryLiteral = ToPgvectorLiteral(queryEmbedding);
         var modelId = options.EmbeddingModelId!;
@@ -744,49 +744,20 @@ public sealed class SemanticMemoryRepository(
 
         var vectorJson = JsonSerializer.Serialize(embedding, JsonOptions);
         var now = DateTimeOffset.UtcNow;
-        if (dbContext.Database.ProviderName?.Contains("Npgsql", StringComparison.OrdinalIgnoreCase) == true)
-        {
-            var vectorLiteral = ToPgvectorLiteral(embedding);
-            await dbContext.Database.ExecuteSqlInterpolatedAsync(
-                $"""
-                INSERT INTO "SemanticClaimEmbeddings" ("ClaimId", "ModelId", "Dimensions", "VectorJson", "ContentHash", "EmbeddedAtUtc", "Embedding")
-                VALUES ({claim.ClaimId}, {options.EmbeddingModelId!}, {embedding.Length}, {vectorJson}, {hash}, {now}, CAST({vectorLiteral} AS vector))
-                ON CONFLICT ("ClaimId") DO UPDATE SET
-                    "ModelId" = EXCLUDED."ModelId",
-                    "Dimensions" = EXCLUDED."Dimensions",
-                    "VectorJson" = EXCLUDED."VectorJson",
-                    "ContentHash" = EXCLUDED."ContentHash",
-                    "EmbeddedAtUtc" = EXCLUDED."EmbeddedAtUtc",
-                    "Embedding" = EXCLUDED."Embedding";
-                """,
-                cancellationToken);
-
-            return true;
-        }
-
-        if (existing is null)
-        {
-            dbContext.SemanticClaimEmbeddings.Add(
-                new SemanticClaimEmbeddingEntity
-                {
-                    ClaimId = claim.ClaimId,
-                    ModelId = options.EmbeddingModelId!,
-                    Dimensions = embedding.Length,
-                    VectorJson = vectorJson,
-                    ContentHash = hash,
-                    EmbeddedAtUtc = now
-                });
-        }
-        else
-        {
-            existing.ModelId = options.EmbeddingModelId!;
-            existing.Dimensions = embedding.Length;
-            existing.VectorJson = vectorJson;
-            existing.ContentHash = hash;
-            existing.EmbeddedAtUtc = now;
-        }
-
-        await dbContext.SaveChangesAsync(cancellationToken);
+        var vectorLiteral = ToPgvectorLiteral(embedding);
+        await dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            INSERT INTO "SemanticClaimEmbeddings" ("ClaimId", "ModelId", "Dimensions", "VectorJson", "ContentHash", "EmbeddedAtUtc", "Embedding")
+            VALUES ({claim.ClaimId}, {options.EmbeddingModelId!}, {embedding.Length}, {vectorJson}, {hash}, {now}, CAST({vectorLiteral} AS vector))
+            ON CONFLICT ("ClaimId") DO UPDATE SET
+                "ModelId" = EXCLUDED."ModelId",
+                "Dimensions" = EXCLUDED."Dimensions",
+                "VectorJson" = EXCLUDED."VectorJson",
+                "ContentHash" = EXCLUDED."ContentHash",
+                "EmbeddedAtUtc" = EXCLUDED."EmbeddedAtUtc",
+                "Embedding" = EXCLUDED."Embedding";
+            """,
+            cancellationToken);
         return true;
     }
 

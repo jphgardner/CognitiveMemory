@@ -1,4 +1,4 @@
-using System.Security.Claims;
+using CognitiveMemory.Api.Security;
 using CognitiveMemory.Domain.Memory;
 using CognitiveMemory.Infrastructure.Persistence;
 using CognitiveMemory.Infrastructure.Persistence.Entities;
@@ -14,9 +14,9 @@ public static class WorkspaceEndpoints
 
         group.MapGet(
             "/companion/{companionId:guid}/summary",
-            async (HttpContext httpContext, Guid companionId, MemoryDbContext dbContext, CancellationToken cancellationToken) =>
+            async (HttpContext httpContext, Guid companionId, MemoryDbContext dbContext, CompanionOwnershipService ownershipService, CancellationToken cancellationToken) =>
             {
-                var companion = await ResolveOwnedCompanionAsync(httpContext.User, companionId, dbContext, cancellationToken);
+                var companion = await ownershipService.ResolveOwnedCompanionAsync(httpContext.User, companionId, dbContext, cancellationToken);
                 if (companion is null)
                 {
                     return Results.NotFound();
@@ -69,9 +69,9 @@ public static class WorkspaceEndpoints
 
         group.MapGet(
             "/companion/{companionId:guid}/memory-packet",
-            async (HttpContext httpContext, Guid companionId, int? take, MemoryDbContext dbContext, CancellationToken cancellationToken) =>
+            async (HttpContext httpContext, Guid companionId, int? take, MemoryDbContext dbContext, CompanionOwnershipService ownershipService, CancellationToken cancellationToken) =>
             {
-                var companion = await ResolveOwnedCompanionAsync(httpContext.User, companionId, dbContext, cancellationToken);
+                var companion = await ownershipService.ResolveOwnedCompanionAsync(httpContext.User, companionId, dbContext, cancellationToken);
                 if (companion is null)
                 {
                     return Results.NotFound();
@@ -144,19 +144,20 @@ public static class WorkspaceEndpoints
 
         group.MapGet(
             "/companion/{companionId:guid}/metrics",
-            async (HttpContext httpContext, Guid companionId, int? take, MemoryDbContext dbContext, CancellationToken cancellationToken) =>
+            async (HttpContext httpContext, Guid companionId, int? take, MemoryDbContext dbContext, CompanionOwnershipService ownershipService, CancellationToken cancellationToken) =>
             {
-                var companion = await ResolveOwnedCompanionAsync(httpContext.User, companionId, dbContext, cancellationToken);
+                var companion = await ownershipService.ResolveOwnedCompanionAsync(httpContext.User, companionId, dbContext, cancellationToken);
                 if (companion is null)
                 {
                     return Results.NotFound();
                 }
 
                 var boundedTake = Math.Clamp(take ?? 150, 50, 400);
-                var lowerSessionToken = companion.SessionId.ToLowerInvariant();
+                var sessionToken = companion.SessionId.Trim();
+                var sessionPattern = SqlLikePattern.Contains(sessionToken);
                 var events = await dbContext.OutboxMessages
                     .AsNoTracking()
-                    .Where(x => x.PayloadJson.ToLower().Contains(lowerSessionToken))
+                    .Where(x => EF.Functions.ILike(x.PayloadJson, sessionPattern))
                     .OrderByDescending(x => x.OccurredAtUtc)
                     .Take(boundedTake)
                     .Select(
@@ -173,17 +174,21 @@ public static class WorkspaceEndpoints
                     .AsNoTracking()
                     .Where(x => x.ExecutedAtUtc >= toolWindowStart)
                     .Where(
-                        x => x.ArgumentsJson.ToLower().Contains(lowerSessionToken)
-                             || x.ResultJson.ToLower().Contains(lowerSessionToken))
+                        x => EF.Functions.ILike(x.ArgumentsJson, sessionPattern)
+                             || EF.Functions.ILike(x.ResultJson, sessionPattern))
                     .OrderByDescending(x => x.ExecutedAtUtc)
                     .Take(300)
                     .ToListAsync(cancellationToken);
 
                 var totalToolCalls = tools.Count;
                 var successfulToolCalls = tools.Count(x => x.Succeeded);
-                var avgLatency = events.Count == 0
+                var latencySamples = events
+                    .Where(x => x.PublishedAtUtc.HasValue)
+                    .Select(x => Math.Max(0, (x.PublishedAtUtc!.Value - x.OccurredAtUtc).TotalSeconds))
+                    .ToList();
+                var avgLatency = latencySamples.Count == 0
                     ? 0.0
-                    : Math.Round(events.Where(x => x.PublishedAtUtc.HasValue).Average(x => Math.Max(0, (x.PublishedAtUtc!.Value - x.OccurredAtUtc).TotalSeconds)), 3);
+                    : Math.Round(latencySamples.Average(), 3);
 
                 var layerDistribution = await BuildLayerDistributionAsync(companion.CompanionId, companion.SessionId, dbContext, cancellationToken);
 
@@ -201,9 +206,9 @@ public static class WorkspaceEndpoints
 
         group.MapGet(
             "/companion/{companionId:guid}/memory-node-detail",
-            async (HttpContext httpContext, Guid companionId, MemoryNodeType nodeType, string nodeId, MemoryDbContext dbContext, CancellationToken cancellationToken) =>
+            async (HttpContext httpContext, Guid companionId, MemoryNodeType nodeType, string nodeId, MemoryDbContext dbContext, CompanionOwnershipService ownershipService, CancellationToken cancellationToken) =>
             {
-                var companion = await ResolveOwnedCompanionAsync(httpContext.User, companionId, dbContext, cancellationToken);
+                var companion = await ownershipService.ResolveOwnedCompanionAsync(httpContext.User, companionId, dbContext, cancellationToken);
                 if (companion is null)
                 {
                     return Results.NotFound();
@@ -224,9 +229,10 @@ public static class WorkspaceEndpoints
                 string? linked,
                 string? query,
                 MemoryDbContext dbContext,
+                CompanionOwnershipService ownershipService,
                 CancellationToken cancellationToken) =>
             {
-                var companion = await ResolveOwnedCompanionAsync(httpContext.User, companionId, dbContext, cancellationToken);
+                var companion = await ownershipService.ResolveOwnedCompanionAsync(httpContext.User, companionId, dbContext, cancellationToken);
                 if (companion is null)
                 {
                     return Results.NotFound();
@@ -246,27 +252,6 @@ public static class WorkspaceEndpoints
             });
 
         return endpoints;
-    }
-
-    private static async Task<CompanionEntity?> ResolveOwnedCompanionAsync(
-        ClaimsPrincipal principal,
-        Guid companionId,
-        MemoryDbContext dbContext,
-        CancellationToken cancellationToken)
-    {
-        var userIdValue = principal.FindFirstValue(ClaimTypes.NameIdentifier) ?? principal.FindFirstValue(ClaimTypes.Name);
-        if (!Guid.TryParse(userIdValue, out var userId))
-        {
-            return null;
-        }
-
-        return await dbContext.Companions
-            .AsNoTracking()
-            .FirstOrDefaultAsync(
-                x => x.CompanionId == companionId
-                     && !x.IsArchived
-                     && x.UserId == userId.ToString(),
-                cancellationToken);
     }
 
     private static async Task<DateTimeOffset?> ResolveLastActivityUtcAsync(string sessionId, MemoryDbContext dbContext, CancellationToken cancellationToken)
@@ -330,161 +315,161 @@ public static class WorkspaceEndpoints
         switch (nodeType)
         {
             case MemoryNodeType.SemanticClaim:
-            {
-                if (!Guid.TryParse(trimmedNodeId, out var claimId))
                 {
-                    return WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId);
-                }
+                    if (!Guid.TryParse(trimmedNodeId, out var claimId))
+                    {
+                        return WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId);
+                    }
 
-                var claim = await dbContext.SemanticClaims
-                    .AsNoTracking()
-                    .Where(x => x.CompanionId == companion.CompanionId && x.ClaimId == claimId)
-                    .Select(x => new { x.Predicate, x.Value, x.Confidence, x.Status, x.UpdatedAtUtc })
-                    .FirstOrDefaultAsync(cancellationToken);
-                return claim is null
-                    ? WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId)
-                    : new WorkspaceMemoryNodeDetailDto(
-                        true,
-                        nodeType,
-                        trimmedNodeId,
-                        $"Claim: {claim.Predicate}",
-                        claim.Value,
-                        $"Confidence {claim.Confidence:0.00} · {claim.Status}",
-                        claim.UpdatedAtUtc);
-            }
+                    var claim = await dbContext.SemanticClaims
+                        .AsNoTracking()
+                        .Where(x => x.CompanionId == companion.CompanionId && x.ClaimId == claimId)
+                        .Select(x => new { x.Predicate, x.Value, x.Confidence, x.Status, x.UpdatedAtUtc })
+                        .FirstOrDefaultAsync(cancellationToken);
+                    return claim is null
+                        ? WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId)
+                        : new WorkspaceMemoryNodeDetailDto(
+                            true,
+                            nodeType,
+                            trimmedNodeId,
+                            $"Claim: {claim.Predicate}",
+                            claim.Value,
+                            $"Confidence {claim.Confidence:0.00} · {claim.Status}",
+                            claim.UpdatedAtUtc);
+                }
             case MemoryNodeType.EpisodicEvent:
-            {
-                if (!Guid.TryParse(trimmedNodeId, out var eventId))
                 {
-                    return WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId);
-                }
+                    if (!Guid.TryParse(trimmedNodeId, out var eventId))
+                    {
+                        return WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId);
+                    }
 
-                var episodic = await dbContext.EpisodicMemoryEvents
-                    .AsNoTracking()
-                    .Where(x => x.CompanionId == companion.CompanionId && x.EventId == eventId)
-                    .Select(x => new { x.Who, x.What, x.Context, x.OccurredAt })
-                    .FirstOrDefaultAsync(cancellationToken);
-                return episodic is null
-                    ? WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId)
-                    : new WorkspaceMemoryNodeDetailDto(
-                        true,
-                        nodeType,
-                        trimmedNodeId,
-                        $"Episode: {episodic.Who}",
-                        episodic.What,
-                        episodic.Context,
-                        episodic.OccurredAt);
-            }
+                    var episodic = await dbContext.EpisodicMemoryEvents
+                        .AsNoTracking()
+                        .Where(x => x.CompanionId == companion.CompanionId && x.EventId == eventId)
+                        .Select(x => new { x.Who, x.What, x.Context, x.OccurredAt })
+                        .FirstOrDefaultAsync(cancellationToken);
+                    return episodic is null
+                        ? WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId)
+                        : new WorkspaceMemoryNodeDetailDto(
+                            true,
+                            nodeType,
+                            trimmedNodeId,
+                            $"Episode: {episodic.Who}",
+                            episodic.What,
+                            episodic.Context,
+                            episodic.OccurredAt);
+                }
             case MemoryNodeType.ProceduralRoutine:
-            {
-                if (!Guid.TryParse(trimmedNodeId, out var routineId))
                 {
-                    return WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId);
-                }
+                    if (!Guid.TryParse(trimmedNodeId, out var routineId))
+                    {
+                        return WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId);
+                    }
 
-                var routine = await dbContext.ProceduralRoutines
-                    .AsNoTracking()
-                    .Where(x => x.CompanionId == companion.CompanionId && x.RoutineId == routineId)
-                    .Select(x => new { x.Name, x.Trigger, x.Outcome, x.UpdatedAtUtc })
-                    .FirstOrDefaultAsync(cancellationToken);
-                return routine is null
-                    ? WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId)
-                    : new WorkspaceMemoryNodeDetailDto(
-                        true,
-                        nodeType,
-                        trimmedNodeId,
-                        $"Routine: {routine.Name}",
-                        routine.Outcome,
-                        $"Trigger: {routine.Trigger}",
-                        routine.UpdatedAtUtc);
-            }
+                    var routine = await dbContext.ProceduralRoutines
+                        .AsNoTracking()
+                        .Where(x => x.CompanionId == companion.CompanionId && x.RoutineId == routineId)
+                        .Select(x => new { x.Name, x.Trigger, x.Outcome, x.UpdatedAtUtc })
+                        .FirstOrDefaultAsync(cancellationToken);
+                    return routine is null
+                        ? WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId)
+                        : new WorkspaceMemoryNodeDetailDto(
+                            true,
+                            nodeType,
+                            trimmedNodeId,
+                            $"Routine: {routine.Name}",
+                            routine.Outcome,
+                            $"Trigger: {routine.Trigger}",
+                            routine.UpdatedAtUtc);
+                }
             case MemoryNodeType.SelfPreference:
-            {
-                var preference = await dbContext.SelfPreferences
-                    .AsNoTracking()
-                    .Where(x => x.CompanionId == companion.CompanionId && x.Key == trimmedNodeId)
-                    .Select(x => new { x.Key, x.Value, x.UpdatedAtUtc })
-                    .FirstOrDefaultAsync(cancellationToken);
-                return preference is null
-                    ? WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId)
-                    : new WorkspaceMemoryNodeDetailDto(
-                        true,
-                        nodeType,
-                        trimmedNodeId,
-                        $"Preference: {preference.Key}",
-                        preference.Value,
-                        null,
-                        preference.UpdatedAtUtc);
-            }
+                {
+                    var preference = await dbContext.SelfPreferences
+                        .AsNoTracking()
+                        .Where(x => x.CompanionId == companion.CompanionId && x.Key == trimmedNodeId)
+                        .Select(x => new { x.Key, x.Value, x.UpdatedAtUtc })
+                        .FirstOrDefaultAsync(cancellationToken);
+                    return preference is null
+                        ? WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId)
+                        : new WorkspaceMemoryNodeDetailDto(
+                            true,
+                            nodeType,
+                            trimmedNodeId,
+                            $"Preference: {preference.Key}",
+                            preference.Value,
+                            null,
+                            preference.UpdatedAtUtc);
+                }
             case MemoryNodeType.ScheduledAction:
-            {
-                if (!Guid.TryParse(trimmedNodeId, out var actionId))
                 {
-                    return WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId);
-                }
+                    if (!Guid.TryParse(trimmedNodeId, out var actionId))
+                    {
+                        return WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId);
+                    }
 
-                var action = await dbContext.ScheduledActions
-                    .AsNoTracking()
-                    .Where(x => x.CompanionId == companion.CompanionId && x.ActionId == actionId)
-                    .Select(x => new { x.ActionType, x.InputJson, x.Status, x.UpdatedAtUtc })
-                    .FirstOrDefaultAsync(cancellationToken);
-                return action is null
-                    ? WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId)
-                    : new WorkspaceMemoryNodeDetailDto(
-                        true,
-                        nodeType,
-                        trimmedNodeId,
-                        $"Action: {action.ActionType}",
-                        action.InputJson,
-                        $"Status: {action.Status}",
-                        action.UpdatedAtUtc);
-            }
+                    var action = await dbContext.ScheduledActions
+                        .AsNoTracking()
+                        .Where(x => x.CompanionId == companion.CompanionId && x.ActionId == actionId)
+                        .Select(x => new { x.ActionType, x.InputJson, x.Status, x.UpdatedAtUtc })
+                        .FirstOrDefaultAsync(cancellationToken);
+                    return action is null
+                        ? WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId)
+                        : new WorkspaceMemoryNodeDetailDto(
+                            true,
+                            nodeType,
+                            trimmedNodeId,
+                            $"Action: {action.ActionType}",
+                            action.InputJson,
+                            $"Status: {action.Status}",
+                            action.UpdatedAtUtc);
+                }
             case MemoryNodeType.SubconsciousDebate:
-            {
-                if (!Guid.TryParse(trimmedNodeId, out var debateId))
                 {
-                    return WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId);
-                }
+                    if (!Guid.TryParse(trimmedNodeId, out var debateId))
+                    {
+                        return WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId);
+                    }
 
-                var debate = await dbContext.SubconsciousDebateSessions
-                    .AsNoTracking()
-                    .Where(x => x.CompanionId == companion.CompanionId && x.DebateId == debateId)
-                    .Select(x => new { x.TopicKey, x.State, x.TriggerEventType, x.UpdatedAtUtc })
-                    .FirstOrDefaultAsync(cancellationToken);
-                return debate is null
-                    ? WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId)
-                    : new WorkspaceMemoryNodeDetailDto(
-                        true,
-                        nodeType,
-                        trimmedNodeId,
-                        $"Debate: {debate.TopicKey}",
-                        $"Trigger: {debate.TriggerEventType}",
-                        $"State: {debate.State}",
-                        debate.UpdatedAtUtc);
-            }
+                    var debate = await dbContext.SubconsciousDebateSessions
+                        .AsNoTracking()
+                        .Where(x => x.CompanionId == companion.CompanionId && x.DebateId == debateId)
+                        .Select(x => new { x.TopicKey, x.State, x.TriggerEventType, x.UpdatedAtUtc })
+                        .FirstOrDefaultAsync(cancellationToken);
+                    return debate is null
+                        ? WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId)
+                        : new WorkspaceMemoryNodeDetailDto(
+                            true,
+                            nodeType,
+                            trimmedNodeId,
+                            $"Debate: {debate.TopicKey}",
+                            $"Trigger: {debate.TriggerEventType}",
+                            $"State: {debate.State}",
+                            debate.UpdatedAtUtc);
+                }
             case MemoryNodeType.ToolInvocation:
-            {
-                if (!Guid.TryParse(trimmedNodeId, out var auditId))
                 {
-                    return WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId);
-                }
+                    if (!Guid.TryParse(trimmedNodeId, out var auditId))
+                    {
+                        return WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId);
+                    }
 
-                var tool = await dbContext.ToolInvocationAudits
-                    .AsNoTracking()
-                    .Where(x => x.CompanionId == companion.CompanionId && x.AuditId == auditId)
-                    .Select(x => new { x.ToolName, x.ResultJson, x.Succeeded, x.Error, x.ExecutedAtUtc })
-                    .FirstOrDefaultAsync(cancellationToken);
-                return tool is null
-                    ? WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId)
-                    : new WorkspaceMemoryNodeDetailDto(
-                        true,
-                        nodeType,
-                        trimmedNodeId,
-                        $"Tool: {tool.ToolName}",
-                        tool.ResultJson,
-                        tool.Succeeded ? "Succeeded" : $"Failed: {tool.Error ?? "unknown"}",
-                        tool.ExecutedAtUtc);
-            }
+                    var tool = await dbContext.ToolInvocationAudits
+                        .AsNoTracking()
+                        .Where(x => x.CompanionId == companion.CompanionId && x.AuditId == auditId)
+                        .Select(x => new { x.ToolName, x.ResultJson, x.Succeeded, x.Error, x.ExecutedAtUtc })
+                        .FirstOrDefaultAsync(cancellationToken);
+                    return tool is null
+                        ? WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId)
+                        : new WorkspaceMemoryNodeDetailDto(
+                            true,
+                            nodeType,
+                            trimmedNodeId,
+                            $"Tool: {tool.ToolName}",
+                            tool.ResultJson,
+                            tool.Succeeded ? "Succeeded" : $"Failed: {tool.Error ?? "unknown"}",
+                            tool.ExecutedAtUtc);
+                }
             default:
                 return WorkspaceMemoryNodeDetailDto.NotFound(nodeType, trimmedNodeId);
         }

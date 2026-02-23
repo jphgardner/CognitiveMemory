@@ -32,11 +32,15 @@ public static class ToolInvocationAuditEndpoints
 
                     var to = toUtc ?? DateTimeOffset.UtcNow;
                     var from = fromUtc ?? to.AddHours(-1);
-                    var token = companion.SessionId.ToLowerInvariant();
+                    var token = companion.SessionId.Trim();
+                    var pattern = SqlLikePattern.Contains(token);
                     var rows = await dbContext.ToolInvocationAudits
                         .AsNoTracking()
                         .Where(x => x.ExecutedAtUtc >= from && x.ExecutedAtUtc <= to)
-                        .Where(x => x.CompanionId == companion.CompanionId || x.ArgumentsJson.ToLower().Contains(token))
+                        .Where(
+                            x => x.CompanionId == companion.CompanionId
+                                 || EF.Functions.ILike(x.ArgumentsJson, pattern)
+                                 || EF.Functions.ILike(x.ResultJson, pattern))
                         .OrderByDescending(x => x.ExecutedAtUtc)
                         .Take(Math.Clamp(take ?? 50, 1, 200))
                         .ToListAsync(cancellationToken);
@@ -48,4 +52,5 @@ public static class ToolInvocationAuditEndpoints
 
         return endpoints;
     }
+
 }

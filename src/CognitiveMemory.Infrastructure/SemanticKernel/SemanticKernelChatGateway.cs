@@ -19,11 +19,6 @@ public sealed class SemanticKernelChatGateway(
         string userPrompt,
         CancellationToken cancellationToken = default)
     {
-        if (string.Equals(options.Provider, "InMemory", StringComparison.OrdinalIgnoreCase))
-        {
-            return $"[InMemory] {userPrompt}";
-        }
-
         var prompt = $"""
                       <system>
                       {systemPrompt}
@@ -44,16 +39,6 @@ public sealed class SemanticKernelChatGateway(
         string userPrompt,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        if (string.Equals(options.Provider, "InMemory", StringComparison.OrdinalIgnoreCase))
-        {
-            foreach (var token in userPrompt.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-            {
-                yield return token + " ";
-            }
-
-            yield break;
-        }
-
         var prompt = $"""
                       <system>
                       {systemPrompt}

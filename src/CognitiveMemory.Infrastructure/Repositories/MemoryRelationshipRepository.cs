@@ -280,7 +280,7 @@ public sealed class MemoryRelationshipRepository(
         {
             var companionId = await companionScopeResolver.ResolveCompanionIdOrThrowAsync(sessionId, cancellationToken);
             var token = $"session:{sessionId}";
-            claimQuery = claimQuery.Where(x => x.CompanionId == companionId && x.Subject.ToLower().Contains(token.ToLower()));
+            claimQuery = claimQuery.Where(x => x.CompanionId == companionId && EF.Functions.ILike(x.Subject, SqlLikePattern.Contains(token)));
         }
 
         var claims = await claimQuery

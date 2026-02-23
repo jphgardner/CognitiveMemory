@@ -217,7 +217,7 @@ public sealed class MemoryToolsPluginTests
             new InMemoryCompanionScopeResolver(),
             new InMemoryCompanionCognitiveProfileResolver(),
             new ClaimExtractionKernel(Kernel.CreateBuilder().Build()),
-            new SemanticKernelOptions { Provider = "InMemory" },
+            new SemanticKernelOptions { Provider = "Ollama" },
             logger ?? new ListLogger<MemoryToolsPlugin>());
     }
 

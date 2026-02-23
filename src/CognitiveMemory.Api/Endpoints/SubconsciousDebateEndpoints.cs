@@ -183,12 +183,12 @@ public static class SubconsciousDebateEndpoints
                     }
 
                     var aggregateId = debateId.ToString("N");
-                    var debateToken = debateId.ToString("D").ToLowerInvariant();
+                    var debateTokenPattern = SqlLikePattern.Contains(debateId.ToString("D"));
                     var rows = await dbContext.OutboxMessages
                         .AsNoTracking()
                         .Where(
                             x => x.AggregateType == "SubconsciousDebate"
-                                 && (x.AggregateId == aggregateId || x.PayloadJson.ToLower().Contains(debateToken)))
+                                 && (x.AggregateId == aggregateId || EF.Functions.ILike(x.PayloadJson, debateTokenPattern)))
                         .OrderByDescending(x => x.OccurredAtUtc)
                         .Take(Math.Clamp(take ?? 120, 1, 500))
                         .Select(
@@ -384,7 +384,7 @@ public static class SubconsciousDebateEndpoints
                     var emittedLifecycleEventIds = new HashSet<Guid>();
                     using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
                     var keepAliveCounter = 0;
-                    var normalizedSessionToken = sessionId.Trim().ToLowerInvariant();
+                    var sessionTokenPattern = SqlLikePattern.Contains(sessionId.Trim());
 
                     while (!cancellationToken.IsCancellationRequested)
                     {
@@ -426,7 +426,7 @@ public static class SubconsciousDebateEndpoints
                         var lifecycleRows = await dbContext.OutboxMessages
                             .AsNoTracking()
                             .Where(x => x.AggregateType == "SubconsciousDebate"
-                                        && x.PayloadJson.ToLower().Contains(normalizedSessionToken))
+                                        && EF.Functions.ILike(x.PayloadJson, sessionTokenPattern))
                             .OrderBy(x => x.OccurredAtUtc)
                             .ThenBy(x => x.EventId)
                             .Take(120)
@@ -491,6 +491,7 @@ public static class SubconsciousDebateEndpoints
         var compact = payloadJson.Replace('\r', ' ').Replace('\n', ' ').Trim();
         return compact.Length <= 220 ? compact : $"{compact[..220]}...";
     }
+
 }
 
 public sealed record RunSubconsciousDebateRequest(string SessionId, string? TopicKey, string? TriggerEventType, string? TriggerPayloadJson);

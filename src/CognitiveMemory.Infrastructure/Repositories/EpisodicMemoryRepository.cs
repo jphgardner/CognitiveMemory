@@ -104,12 +104,12 @@ public sealed class EpisodicMemoryRepository(MemoryDbContext dbContext, IOutboxW
 
         foreach (var term in normalizedTerms)
         {
-            var current = term;
+            var current = SqlLikePattern.Contains(term);
             queryable = queryable.Where(
-                x => x.Who.ToLower().Contains(current)
-                     || x.What.ToLower().Contains(current)
-                     || x.Context.ToLower().Contains(current)
-                     || x.SourceReference.ToLower().Contains(current));
+                x => EF.Functions.ILike(x.Who, current)
+                     || EF.Functions.ILike(x.What, current)
+                     || EF.Functions.ILike(x.Context, current)
+                     || EF.Functions.ILike(x.SourceReference, current));
         }
 
         var rows = await queryable
@@ -155,4 +155,5 @@ public sealed class EpisodicMemoryRepository(MemoryDbContext dbContext, IOutboxW
             x.OccurredAt,
             x.Context,
             x.SourceReference);
+
 }

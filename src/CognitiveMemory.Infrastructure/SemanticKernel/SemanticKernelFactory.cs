@@ -39,8 +39,7 @@ public sealed class SemanticKernelFactory(SemanticKernelOptions options)
             return kernelBuilder.Build();
         }
 
-        // InMemory and unknown providers do not require an SK chat connector.
-        return kernelBuilder.Build();
+        throw new InvalidOperationException($"Unsupported SemanticKernel provider '{provider}'. Configure Provider=OpenAI or Provider=Ollama.");
     }
 
     private static string FirstNonEmpty(params string?[] candidates)

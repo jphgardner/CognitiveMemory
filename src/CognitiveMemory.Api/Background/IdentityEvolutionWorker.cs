@@ -20,16 +20,27 @@ public sealed class IdentityEvolutionWorker(
 
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
-            using var scope = serviceProvider.CreateScope();
-            var service = scope.ServiceProvider.GetRequiredService<IIdentityEvolutionService>();
-            var result = await service.RunOnceAsync(stoppingToken);
+            try
+            {
+                using var scope = serviceProvider.CreateScope();
+                var service = scope.ServiceProvider.GetRequiredService<IIdentityEvolutionService>();
+                var result = await service.RunOnceAsync(stoppingToken);
 
-            logger.LogInformation(
-                "Identity evolution run complete. Episodes={Episodes} Claims={Claims} Routines={Routines} PreferencesUpdated={Updated}",
-                result.EpisodesScanned,
-                result.ClaimsScanned,
-                result.ProceduresScanned,
-                result.PreferencesUpdated);
+                logger.LogInformation(
+                    "Identity evolution run complete. Episodes={Episodes} Claims={Claims} Routines={Routines} PreferencesUpdated={Updated}",
+                    result.EpisodesScanned,
+                    result.ClaimsScanned,
+                    result.ProceduresScanned,
+                    result.PreferencesUpdated);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Identity evolution worker cycle failed.");
+            }
         }
     }
 }

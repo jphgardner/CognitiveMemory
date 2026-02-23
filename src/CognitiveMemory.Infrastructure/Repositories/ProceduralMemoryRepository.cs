@@ -92,21 +92,11 @@ public sealed class ProceduralMemoryRepository(MemoryDbContext dbContext, IOutbo
         IQueryable<ProceduralRoutineEntity> queryable = dbContext.ProceduralRoutines
             .AsNoTracking()
             .Where(x => x.CompanionId == companionId);
-        if (dbContext.Database.ProviderName?.Contains("Npgsql", StringComparison.OrdinalIgnoreCase) == true)
-        {
-            var pattern = $"%{normalized}%";
-            queryable = queryable.Where(
-                x => EF.Functions.ILike(x.Trigger, pattern)
-                     || EF.Functions.ILike(x.Name, pattern)
-                     || EF.Functions.ILike(x.Outcome, pattern));
-        }
-        else
-        {
-            queryable = queryable.Where(
-                x => x.Trigger.ToLower().Contains(normalized)
-                     || x.Name.ToLower().Contains(normalized)
-                     || x.Outcome.ToLower().Contains(normalized));
-        }
+        var pattern = SqlLikePattern.Contains(normalized);
+        queryable = queryable.Where(
+            x => EF.Functions.ILike(x.Trigger, pattern)
+                 || EF.Functions.ILike(x.Name, pattern)
+                 || EF.Functions.ILike(x.Outcome, pattern));
 
         var rows = await queryable
             .OrderByDescending(x => x.UpdatedAtUtc)

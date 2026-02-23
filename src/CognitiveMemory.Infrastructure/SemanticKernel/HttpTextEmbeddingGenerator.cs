@@ -1,5 +1,4 @@
 using System.Net.Http.Headers;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -30,11 +29,6 @@ public sealed class HttpTextEmbeddingGenerator(
         }
 
         var provider = FirstNonEmpty(options.EmbeddingProvider, options.Provider);
-        if (string.Equals(provider, "InMemory", StringComparison.OrdinalIgnoreCase))
-        {
-            return CreateDeterministicEmbedding(text);
-        }
-
         try
         {
             if (string.Equals(provider, "OpenAI", StringComparison.OrdinalIgnoreCase))
@@ -175,20 +169,6 @@ public sealed class HttpTextEmbeddingGenerator(
         }
 
         return values;
-    }
-
-    private static float[] CreateDeterministicEmbedding(string text)
-    {
-        // Deterministic fallback for local tests when provider is InMemory.
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(text.Trim().ToLowerInvariant()));
-        var dimensions = 32;
-        var output = new float[dimensions];
-        for (var i = 0; i < dimensions; i++)
-        {
-            output[i] = (hash[i] - 127.5f) / 127.5f;
-        }
-
-        return output;
     }
 
     private static string FirstNonEmpty(params string?[] values)

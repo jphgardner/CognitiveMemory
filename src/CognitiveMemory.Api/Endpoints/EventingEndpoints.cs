@@ -114,11 +114,12 @@ public static class EventingEndpoints
         CancellationToken cancellationToken)
     {
         var requestedTake = Math.Clamp(take ?? 120, 10, 500);
-        var lowered = sessionId.ToLowerInvariant();
+        var normalizedSessionId = sessionId.Trim();
+        var pattern = SqlLikePattern.Contains(normalizedSessionId);
 
         var rows = await dbContext.OutboxMessages
             .AsNoTracking()
-            .Where(x => x.PayloadJson.ToLower().Contains(lowered))
+            .Where(x => EF.Functions.ILike(x.PayloadJson, pattern))
             .OrderByDescending(x => x.OccurredAtUtc)
             .Take(requestedTake)
             .ToArrayAsync(cancellationToken);
@@ -189,6 +190,7 @@ public static class EventingEndpoints
         var compact = payloadJson.Replace('\r', ' ').Replace('\n', ' ').Trim();
         return compact.Length <= 220 ? compact : $"{compact[..220]}...";
     }
+
 }
 
 public sealed record EventingEventDto(

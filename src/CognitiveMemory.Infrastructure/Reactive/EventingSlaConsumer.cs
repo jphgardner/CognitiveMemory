@@ -21,7 +21,24 @@ public sealed class EventingSlaConsumer(
         var lag = Math.Max(0, (DateTimeOffset.UtcNow - @event.OccurredAtUtc).TotalSeconds);
         LagSeconds.Record(lag, new KeyValuePair<string, object?>("event_type", @event.EventType));
 
-        if (lag >= Math.Max(1, options.SlaErrorLagSeconds))
+        var warningThreshold = Math.Max(1, options.SlaWarningLagSeconds);
+        var errorThreshold = Math.Max(warningThreshold, options.SlaErrorLagSeconds);
+        if (options.SlaByEventType.TryGetValue(@event.EventType, out var @override))
+        {
+            if (@override.WarningLagSeconds.HasValue)
+            {
+                warningThreshold = Math.Max(1, @override.WarningLagSeconds.Value);
+            }
+
+            if (@override.ErrorLagSeconds.HasValue)
+            {
+                errorThreshold = Math.Max(1, @override.ErrorLagSeconds.Value);
+            }
+
+            errorThreshold = Math.Max(errorThreshold, warningThreshold);
+        }
+
+        if (lag >= errorThreshold)
         {
             SlaBreaches.Add(1, new KeyValuePair<string, object?>("severity", "error"));
             logger.LogError(
@@ -30,7 +47,7 @@ public sealed class EventingSlaConsumer(
                 @event.EventType,
                 lag);
         }
-        else if (lag >= Math.Max(1, options.SlaWarningLagSeconds))
+        else if (lag >= warningThreshold)
         {
             SlaBreaches.Add(1, new KeyValuePair<string, object?>("severity", "warning"));
             logger.LogWarning(

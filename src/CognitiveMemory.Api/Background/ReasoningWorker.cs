@@ -20,18 +20,29 @@ public sealed class ReasoningWorker(
 
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
-            using var scope = serviceProvider.CreateScope();
-            var service = scope.ServiceProvider.GetRequiredService<ICognitiveReasoningService>();
-            var result = await service.RunOnceAsync(stoppingToken);
+            try
+            {
+                using var scope = serviceProvider.CreateScope();
+                var service = scope.ServiceProvider.GetRequiredService<ICognitiveReasoningService>();
+                var result = await service.RunOnceAsync(stoppingToken);
 
-            logger.LogInformation(
-                "Reasoning run complete. Episodes={Episodes} Claims={Claims} Inferred={Inferred} Adjusted={Adjusted} Weak={Weak} SuggestedProcedures={Suggested}",
-                result.EpisodesScanned,
-                result.ClaimsScanned,
-                result.InferredClaims,
-                result.ConfidenceAdjustments,
-                result.WeakClaimsIdentified,
-                result.ProceduralSuggestions);
+                logger.LogInformation(
+                    "Reasoning run complete. Episodes={Episodes} Claims={Claims} Inferred={Inferred} Adjusted={Adjusted} Weak={Weak} SuggestedProcedures={Suggested}",
+                    result.EpisodesScanned,
+                    result.ClaimsScanned,
+                    result.InferredClaims,
+                    result.ConfidenceAdjustments,
+                    result.WeakClaimsIdentified,
+                    result.ProceduralSuggestions);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Reasoning worker cycle failed.");
+            }
         }
     }
 }

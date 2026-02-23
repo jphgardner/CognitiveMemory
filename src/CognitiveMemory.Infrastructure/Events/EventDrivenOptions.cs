@@ -9,8 +9,15 @@ public sealed class EventDrivenOptions
     public int MaxRetries { get; set; } = 8;
     public int SlaWarningLagSeconds { get; set; } = 15;
     public int SlaErrorLagSeconds { get; set; } = 45;
+    public Dictionary<string, EventSlaOverrideOptions> SlaByEventType { get; set; } = new();
     public DeadLetterRecoveryOptions DeadLetterRecovery { get; set; } = new();
     public RabbitMqEventingOptions RabbitMq { get; set; } = new();
+}
+
+public sealed class EventSlaOverrideOptions
+{
+    public int? WarningLagSeconds { get; set; }
+    public int? ErrorLagSeconds { get; set; }
 }
 
 public sealed class DeadLetterRecoveryOptions
