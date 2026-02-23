@@ -1,0 +1,38 @@
+<aside class="sidebar border-r border-slate-200/80 bg-white/70 backdrop-blur-md">
+  <div class="brand rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <p class="brand-kicker text-[11px] tracking-[0.22em] text-slate-500">CognitiveMemory</p>
+    <h1 class="mt-1 text-2xl font-extrabold tracking-tight text-slate-900">Enterprise Console</h1>
+    <p class="brand-subtitle mt-1 text-sm text-slate-600">Session-driven intelligence operations</p>
+  </div>
+
+  <nav class="nav mt-1">
+    <button
+      *ngFor="let item of navigation"
+      type="button"
+      class="nav-item group border border-slate-200 bg-white/80 shadow-sm transition-all hover:-translate-y-0.5 hover:border-teal-300 hover:shadow-md"
+      [class.active]="activePage === item.id"
+      (click)="select(item.id)">
+      <strong class="text-sm font-semibold text-slate-900">{{ item.label }}</strong>
+      <span class="text-xs text-slate-500">{{ item.caption }}</span>
+    </button>
+  </nav>
+
+  <div class="side-metrics rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div class="metric-row">
+      <span class="label text-[11px] uppercase tracking-[0.2em] text-slate-500">Session</span>
+      <code class="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-700">{{ sessionId.slice(0, 12) }}</code>
+    </div>
+    <div class="metric-row">
+      <span class="label text-[11px] uppercase tracking-[0.2em] text-slate-500">Assistant Turns</span>
+      <strong class="text-sm font-semibold text-slate-900">{{ assistantTurnCount }}</strong>
+    </div>
+    <div class="metric-row">
+      <span class="label text-[11px] uppercase tracking-[0.2em] text-slate-500">Tool Success</span>
+      <strong class="text-sm font-semibold text-slate-900">{{ toolSuccessRate }}%</strong>
+    </div>
+    <div class="metric-row">
+      <span class="label text-[11px] uppercase tracking-[0.2em] text-slate-500">Avg Latency</span>
+      <strong class="text-sm font-semibold text-slate-900">{{ averageResponseSeconds }}s</strong>
+    </div>
+  </div>
+</aside>

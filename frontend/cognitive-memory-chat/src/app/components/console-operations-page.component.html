@@ -1,0 +1,73 @@
+<section class="page space-y-4">
+  <div class="ops-grid">
+    <div class="op-card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <h3>Consolidation + Decay</h3>
+      <div class="row">
+        <button mat-stroked-button type="button" (click)="host.runConsolidation()" [disabled]="host.streaming">Run Consolidation</button>
+        <button mat-stroked-button type="button" (click)="host.runDecay()" [disabled]="host.streaming">Run Decay</button>
+      </div>
+      <pre *ngIf="host.consolidationResult">{{ host.consolidationResult | json }}</pre>
+      <pre *ngIf="host.decayResult">{{ host.decayResult | json }}</pre>
+    </div>
+
+    <div class="op-card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <h3>Episodic Timeline</h3>
+      <div class="row">
+        <label>
+          <span class="label">Take</span>
+          <input type="number" [(ngModel)]="host.episodicTake" name="episodicTake" min="1" max="200" />
+        </label>
+        <button mat-stroked-button type="button" (click)="host.loadEpisodic()" [disabled]="host.streaming">Load Events</button>
+      </div>
+      <pre>{{ host.episodicEvents | json }}</pre>
+    </div>
+
+    <div class="op-card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <h3>Semantic Claims</h3>
+      <div class="grid-2">
+        <label><span class="label">Subject</span><input [(ngModel)]="host.claimSubject" name="claimSubject" /></label>
+        <label><span class="label">Predicate</span><input [(ngModel)]="host.claimPredicate" name="claimPredicate" /></label>
+        <label class="wide"><span class="label">Value</span><input [(ngModel)]="host.claimValue" name="claimValue" /></label>
+        <label><span class="label">Confidence</span><input type="number" [(ngModel)]="host.claimConfidence" name="claimConfidence" min="0" max="1" step="0.05" /></label>
+      </div>
+      <div class="row">
+        <button mat-raised-button color="primary" type="button" (click)="host.createClaim()" [disabled]="host.streaming">Create Claim</button>
+      </div>
+
+      <div class="grid-2 query">
+        <label><span class="label">Filter Subject</span><input [(ngModel)]="host.semanticSubject" name="semanticSubject" /></label>
+        <label><span class="label">Filter Predicate</span><input [(ngModel)]="host.semanticPredicate" name="semanticPredicate" /></label>
+      </div>
+      <button mat-stroked-button type="button" (click)="host.queryClaims()" [disabled]="host.streaming">Query Claims</button>
+      <pre>{{ host.semanticResults | json }}</pre>
+    </div>
+
+    <div class="op-card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <h3>Procedural Memory</h3>
+      <div class="grid-2">
+        <label><span class="label">Trigger</span><input [(ngModel)]="host.routineTrigger" name="routineTrigger" /></label>
+        <label><span class="label">Name</span><input [(ngModel)]="host.routineName" name="routineName" /></label>
+        <label class="wide"><span class="label">Outcome</span><input [(ngModel)]="host.routineOutcome" name="routineOutcome" /></label>
+      </div>
+      <label>
+        <span class="label">Steps (one per line)</span>
+        <textarea [(ngModel)]="host.routineSteps" name="routineSteps" rows="4"></textarea>
+      </label>
+      <button mat-raised-button color="primary" type="button" (click)="host.upsertRoutine()" [disabled]="host.streaming">Save Routine</button>
+    </div>
+
+    <div class="op-card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <h3>Self Model</h3>
+      <div class="grid-2">
+        <label><span class="label">Key</span><input [(ngModel)]="host.prefKey" name="prefKey" /></label>
+        <label><span class="label">Value</span><input [(ngModel)]="host.prefValue" name="prefValue" /></label>
+      </div>
+      <div class="row">
+        <button mat-raised-button color="primary" type="button" (click)="host.setPreference()" [disabled]="host.streaming">Set Preference</button>
+        <button mat-stroked-button type="button" (click)="host.loadSelfModel()" [disabled]="host.streaming">Load Self Model</button>
+      </div>
+      <pre>{{ host.selfSnapshot | json }}</pre>
+    </div>
+
+  </div>
+</section>

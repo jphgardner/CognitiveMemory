@@ -1,0 +1,60 @@
+<div class="enterprise-shell bg-slate-100 text-slate-900">
+  <app-console-sidebar
+    [navigation]="navigation"
+    [activePage]="activePage"
+    [sessionId]="sessionId"
+    [assistantTurnCount]="assistantTurnCount()"
+    [toolSuccessRate]="toolSuccessRate()"
+    [averageResponseSeconds]="averageResponseSeconds()"
+    (pageSelected)="setActivePage($event)">
+  </app-console-sidebar>
+
+  <section class="workspace min-w-0">
+    <app-console-header
+      [activePageCaption]="activePageCaption()"
+      [activePageLabel]="activePageLabel()"
+      [statusTone]="statusTone"
+      [statusText]="statusText"
+      [apiBaseUrl]="apiBaseUrl"
+      [sessionId]="sessionId"
+      [streaming]="streaming"
+      (apiBaseUrlChanged)="onApiBaseUrlInputChanged($event)"
+      (sessionIdChanged)="onSessionIdChanged($event)"
+      (openClientPortal)="openClientPortal()"
+      (openControlCenter)="openControlCenter()">
+    </app-console-header>
+
+    <main class="content p-5">
+      <app-console-overview-page
+        *ngIf="isPageActive('overview')"
+        [turnsCount]="turns.length"
+        [toolSuccessRateValue]="toolSuccessRate()"
+        [successfulToolCallsCount]="successfulToolCalls()"
+        [totalToolCallsCount]="totalToolCalls()"
+        [averageResponseSecondsValue]="averageResponseSeconds()"
+        [topMemoryLayerValue]="topMemoryLayer()"
+        [activityPolylinePointsValue]="activityPolylinePoints()"
+        [activityAreaPointsValue]="activityAreaPoints()"
+        [memoryLayerMetricsValue]="memoryLayerMetrics()"
+        [recentToolEventsValue]="recentToolEvents()">
+      </app-console-overview-page>
+
+      <app-console-chat-page *ngIf="isPageActive('chat')" [host]="this"></app-console-chat-page>
+      <app-console-memory-page *ngIf="isPageActive('memory')" [host]="this"></app-console-memory-page>
+      <app-console-debates-page *ngIf="isPageActive('debates')" [host]="this"></app-console-debates-page>
+
+      <app-console-analytics-page
+        *ngIf="isPageActive('analytics')"
+        [responseThroughputPerMinuteValue]="responseThroughputPerMinute()"
+        [totalToolCallsCount]="totalToolCalls()"
+        [successfulToolCallsCount]="successfulToolCalls()"
+        [toolOutcomeMetricsValue]="toolOutcomeMetrics()"
+        [activityPolylinePointsValue]="activityPolylinePoints()"
+        [activityAreaPointsValue]="activityAreaPoints()"
+        [latestAssistantPreviewValue]="latestAssistantPreview(280)">
+      </app-console-analytics-page>
+
+      <app-console-operations-page *ngIf="isPageActive('operations')" [host]="this"></app-console-operations-page>
+    </main>
+  </section>
+</div>

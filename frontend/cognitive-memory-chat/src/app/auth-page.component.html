@@ -1,0 +1,30 @@
+<section class="auth-card">
+  <header class="auth-card__head">
+    <p class="label">Companion Identity</p>
+    <h1>{{ mode() === 'register' ? 'Create your operator account' : 'Sign in to Companion OS' }}</h1>
+    <p>Secure, isolated control for each AI companion profile.</p>
+  </header>
+
+  <form class="auth-card__form" (ngSubmit)="submit()">
+    <label>
+      <span>Email</span>
+      <input type="email" [ngModel]="email()" (ngModelChange)="setEmail($event)" name="email" autocomplete="email" required />
+    </label>
+
+    <label>
+      <span>Password</span>
+      <input type="password" [ngModel]="password()" (ngModelChange)="setPassword($event)" name="password" autocomplete="current-password" required />
+    </label>
+
+    <button mat-raised-button color="primary" type="submit" [disabled]="loading()">
+      {{ submitLabel() }}
+    </button>
+  </form>
+
+  <p class="auth-card__error" *ngIf="error()">{{ error() }}</p>
+
+  <footer class="auth-card__foot">
+    <a *ngIf="mode() === 'login'" routerLink="/auth/register">Need an account? Register</a>
+    <a *ngIf="mode() === 'register'" routerLink="/auth/login">Already have an account? Login</a>
+  </footer>
+</section>

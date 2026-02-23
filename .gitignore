@@ -10,4 +10,4 @@ riderModule.iml
 frontend/*/node_modules/
 frontend/*/.angular/
 frontend/*/dist/
-data/db/
+data/

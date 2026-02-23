@@ -1,0 +1,106 @@
+<section class="page space-y-4">
+  <div class="kpi-grid">
+    <article class="kpi-card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <p class="label">Conversation Volume</p>
+      <h3>{{ turnsCount }}</h3>
+      <span>Total records (user + assistant)</span>
+    </article>
+
+    <article class="kpi-card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <p class="label">Tool Reliability</p>
+      <h3>{{ toolSuccessRateValue }}%</h3>
+      <span>{{ successfulToolCallsCount }}/{{ totalToolCallsCount }} successful executions</span>
+    </article>
+
+    <article class="kpi-card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <p class="label">Average Response</p>
+      <h3>{{ averageResponseSecondsValue }}s</h3>
+      <span>Measured from stream start to completion</span>
+    </article>
+
+    <article class="kpi-card rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <p class="label">Primary Memory Layer</p>
+      <h3>{{ topMemoryLayerValue }}</h3>
+      <span>Most frequently referenced layer</span>
+    </article>
+  </div>
+
+  <div class="chart-grid">
+    <article class="panel chart-panel rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div class="panel-head">
+        <h3>Assistant Output Trend</h3>
+        <span>last 14 turns</span>
+      </div>
+      <svg viewBox="0 0 430 130" class="trend-chart" *ngIf="activityPolylinePointsValue; else noTrend">
+        <defs>
+          <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#0f8b8d" stop-opacity="0.42" />
+            <stop offset="100%" stop-color="#0f8b8d" stop-opacity="0.02" />
+          </linearGradient>
+        </defs>
+        <polyline [attr.points]="activityAreaPointsValue" fill="url(#trendFill)" stroke="none"></polyline>
+        <polyline [attr.points]="activityPolylinePointsValue" fill="none" stroke="#0f8b8d" stroke-width="3" stroke-linecap="round"></polyline>
+      </svg>
+      <ng-template #noTrend>
+        <p class="placeholder">No trend data yet. Stream a few prompts to populate this chart.</p>
+      </ng-template>
+    </article>
+
+    <article class="panel chart-panel rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div class="panel-head">
+        <h3>Memory Layer Distribution</h3>
+        <span>evidence coverage</span>
+      </div>
+      <div class="bars" *ngIf="memoryLayerMetricsValue.length > 0; else noLayers">
+        <div class="bar-row" *ngFor="let layer of memoryLayerMetricsValue">
+          <div class="bar-label">
+            <strong>{{ layer.layer }}</strong>
+            <span>{{ layer.count }} hits</span>
+          </div>
+          <div class="bar-track">
+            <div class="bar-fill" [style.width.%]="layer.percent"></div>
+          </div>
+          <span class="bar-value">{{ layer.percent }}%</span>
+        </div>
+      </div>
+      <ng-template #noLayers>
+        <p class="placeholder">Memory layer telemetry will appear after tool-audited responses.</p>
+      </ng-template>
+    </article>
+  </div>
+
+  <article class="panel table-panel rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div class="panel-head">
+      <h3>Recent Tool Executions</h3>
+      <span>{{ recentToolEventsValue.length }} captured</span>
+    </div>
+
+    <div class="table-wrap" *ngIf="recentToolEventsValue.length > 0; else noTools">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Tool</th>
+            <th>Mode</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr *ngFor="let call of recentToolEventsValue">
+            <td>{{ call.executedAtUtc | date: 'HH:mm:ss' }}</td>
+            <td>{{ call.toolName }}</td>
+            <td>{{ call.isWrite ? 'Write' : 'Read' }}</td>
+            <td>
+              <span class="pill" [class.ok]="call.succeeded" [class.fail]="!call.succeeded">
+                {{ call.succeeded ? 'Success' : 'Fail' }}
+              </span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <ng-template #noTools>
+      <p class="placeholder">No tool events observed yet.</p>
+    </ng-template>
+  </article>
+</section>

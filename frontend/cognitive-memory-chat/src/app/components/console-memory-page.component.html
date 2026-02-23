@@ -1,0 +1,153 @@
+<section class="page memory-layout gap-4">
+  <article class="panel memory-shell rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div class="panel-head">
+      <h3>Memory Console</h3>
+      <span>{{ host.graphSummaryText() }}</span>
+    </div>
+
+    <div class="row">
+      <button mat-stroked-button type="button" [class.active]="host.isMemoryView('graph')" (click)="host.setMemoryView('graph')">Graph</button>
+      <button mat-stroked-button type="button" [class.active]="host.isMemoryView('relationships')" (click)="host.setMemoryView('relationships')">Relationships</button>
+      <button mat-stroked-button type="button" [class.active]="host.isMemoryView('workbench')" (click)="host.setMemoryView('workbench')">Workbench</button>
+      <button mat-stroked-button type="button" (click)="host.loadRelationshipsBySession()" [disabled]="host.streaming">Refresh</button>
+    </div>
+  </article>
+
+  <article class="panel rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" *ngIf="host.isMemoryView('graph')">
+    <div class="panel-head">
+      <h3>Relationship Graph</h3>
+      <span>{{ host.graphSummaryText() }}</span>
+    </div>
+    <div class="row">
+      <button mat-stroked-button type="button" (click)="host.loadRelationshipsBySession()" [disabled]="host.streaming">Refresh Graph</button>
+      <button mat-stroked-button type="button" (click)="host.clearGraphSelection()" [disabled]="!host.selectedGraphNodeKey">Clear Selection</button>
+    </div>
+
+    <div class="graph-canvas" *ngIf="host.relationshipGraphNodes().length > 0; else noGraphData">
+      <svg [attr.viewBox]="'0 0 ' + host.graphWidth + ' ' + host.graphHeight" preserveAspectRatio="xMidYMid meet">
+        <g>
+          <line
+            *ngFor="let edge of host.relationshipGraphRenderedEdges()"
+            [attr.x1]="edge.x1"
+            [attr.y1]="edge.y1"
+            [attr.x2]="edge.x2"
+            [attr.y2]="edge.y2"
+            [attr.class]="host.relationshipEdgeClass(edge)">
+          </line>
+        </g>
+        <g>
+          <g *ngFor="let node of host.relationshipGraphNodes()">
+            <circle
+              [attr.cx]="node.x"
+              [attr.cy]="node.y"
+              [attr.r]="host.relationshipNodeRadius(node)"
+              [attr.class]="host.relationshipNodeClass(node)"
+              (click)="host.selectGraphNode(node.key)">
+            </circle>
+            <text [attr.x]="node.x + 10" [attr.y]="node.y - 10" class="graph-label">{{ host.relationshipNodeLabel(node) }}</text>
+          </g>
+        </g>
+      </svg>
+    </div>
+    <ng-template #noGraphData>
+      <p class="empty">No active relationship graph data for this session yet.</p>
+    </ng-template>
+  </article>
+
+  <article class="panel rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" *ngIf="host.isMemoryView('graph') || host.isMemoryView('relationships')">
+    <div class="panel-head">
+      <h3>Relationship Explorer</h3>
+      <span>{{ (host.isMemoryView('graph') ? host.selectedGraphRelationships().length : host.relationships.length) }} edges</span>
+    </div>
+    <div class="row">
+      <label>
+        <span class="label">Type Filter</span>
+        <input [(ngModel)]="host.relationshipTypeFilter" name="relationshipTypeFilterMem" placeholder="supports / contradicts / about" />
+      </label>
+      <label>
+        <span class="label">Take</span>
+        <input type="number" [(ngModel)]="host.relationshipTake" name="relationshipTakeMem" min="1" max="1000" />
+      </label>
+      <button mat-stroked-button type="button" (click)="host.loadRelationshipsBySession()" [disabled]="host.streaming">Load Session</button>
+    </div>
+    <div class="event-list" *ngIf="(host.isMemoryView('graph') ? host.selectedGraphRelationships().length : host.relationships.length) > 0; else noSelectedGraphEdges">
+      <article *ngFor="let rel of (host.isMemoryView('graph') ? host.selectedGraphRelationships() : host.relationships)" class="event-card" [ngClass]="host.relationshipStatusClass(rel)">
+        <div class="event-top">
+          <strong>{{ rel.relationshipType }}</strong>
+          <span>{{ rel.updatedAtUtc | date: 'HH:mm:ss.SSS' }}</span>
+        </div>
+        <div class="event-meta">
+          <span>{{ host.relationshipNodeTypeLabel(rel.fromType) }} -> {{ host.relationshipNodeTypeLabel(rel.toType) }}</span>
+          <span>conf={{ rel.confidence }} · str={{ rel.strength }}</span>
+        </div>
+        <p class="event-preview">{{ rel.fromId }} -> {{ rel.toId }}</p>
+        <div class="debate-item-actions" *ngIf="host.isMemoryView('relationships')">
+          <button mat-button type="button" (click)="host.retireRelationship(rel.relationshipId)" [disabled]="host.streaming || rel.status === 'Retired'">Retire</button>
+        </div>
+      </article>
+    </div>
+    <ng-template #noSelectedGraphEdges>
+      <p class="empty">No edges for current selection.</p>
+    </ng-template>
+  </article>
+
+  <article class="panel rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" *ngIf="host.isMemoryView('workbench')">
+    <div class="panel-head">
+      <h3>Memory Workbench</h3>
+      <span>Create + maintain relationships</span>
+    </div>
+
+    <div class="grid-2 query">
+      <label>
+        <span class="label">Node Type</span>
+        <select [(ngModel)]="host.relationshipByNodeType" name="relationshipByNodeTypeMem">
+          <option *ngFor="let type of host.relationshipNodeTypes" [ngValue]="type.value">{{ type.label }}</option>
+        </select>
+      </label>
+      <label>
+        <span class="label">Node ID</span>
+        <input [(ngModel)]="host.relationshipByNodeId" name="relationshipByNodeIdMem" placeholder="claimId / routineId / key" />
+      </label>
+    </div>
+    <div class="row">
+      <button mat-stroked-button type="button" (click)="host.loadRelationshipsByNode()" [disabled]="host.streaming || !host.relationshipByNodeId.trim()">Load Node</button>
+    </div>
+
+    <div class="grid-2 query">
+      <label>
+        <span class="label">From Type</span>
+        <select [(ngModel)]="host.relationshipCreateFromType" name="relationshipCreateFromTypeMem">
+          <option *ngFor="let type of host.relationshipNodeTypes" [ngValue]="type.value">{{ type.label }}</option>
+        </select>
+      </label>
+      <label><span class="label">From ID</span><input [(ngModel)]="host.relationshipCreateFromId" name="relationshipCreateFromIdMem" /></label>
+      <label>
+        <span class="label">To Type</span>
+        <select [(ngModel)]="host.relationshipCreateToType" name="relationshipCreateToTypeMem">
+          <option *ngFor="let type of host.relationshipNodeTypes" [ngValue]="type.value">{{ type.label }}</option>
+        </select>
+      </label>
+      <label><span class="label">To ID</span><input [(ngModel)]="host.relationshipCreateToId" name="relationshipCreateToIdMem" /></label>
+      <label><span class="label">Relation</span><input [(ngModel)]="host.relationshipCreateType" name="relationshipCreateTypeMem" /></label>
+      <label><span class="label">Confidence</span><input type="number" min="0" max="1" step="0.05" [(ngModel)]="host.relationshipCreateConfidence" name="relationshipCreateConfidenceMem" /></label>
+      <label><span class="label">Strength</span><input type="number" min="0" max="1" step="0.05" [(ngModel)]="host.relationshipCreateStrength" name="relationshipCreateStrengthMem" /></label>
+    </div>
+    <div class="row">
+      <button mat-raised-button color="primary" type="button" (click)="host.createRelationship()" [disabled]="host.streaming">Upsert Relationship</button>
+      <label>
+        <span class="label">Backfill Take</span>
+        <input type="number" [(ngModel)]="host.relationshipBackfillTake" name="relationshipBackfillTakeMem" min="100" max="10000" />
+      </label>
+      <button mat-stroked-button type="button" (click)="host.backfillRelationships()" [disabled]="host.streaming">Run Backfill</button>
+      <label>
+        <span class="label">AI Extract Take</span>
+        <input type="number" [(ngModel)]="host.relationshipExtractTake" name="relationshipExtractTakeMem" min="20" max="2000" />
+      </label>
+      <label class="decision-checkbox">
+        <input type="checkbox" [(ngModel)]="host.relationshipExtractApply" name="relationshipExtractApplyMem" />
+        <span>Apply AI edges</span>
+      </label>
+      <button mat-stroked-button type="button" (click)="host.extractRelationshipsWithAi()" [disabled]="host.streaming">Run AI Extractor</button>
+    </div>
+  </article>
+</section>
